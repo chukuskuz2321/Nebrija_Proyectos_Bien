@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import {
   Folder,
   FolderPlus,
+  FilePlus2,
   FileText,
   FileSpreadsheet,
   Presentation,
@@ -155,19 +156,10 @@ function dataUrlToBlob(
   return new Blob([fallbackText || ''], { type: mimeType });
 }
 
-const LOCAL_WORKSPACE_STORAGE_KEY = 'chikihub_workspace_prod_v3';
+const LOCAL_WORKSPACE_STORAGE_KEY = 'chikihub_workspace_prod_v4';
 
 const DEFAULT_WORKSPACE_FALLBACK: WorkspaceData = {
-  users: [
-    {
-      id: 'usr_chiki',
-      username: 'chiki',
-      displayName: 'Chiki (Creador)',
-      passwordHash: '1234',
-      role: 'Coordinador del Grupo',
-      createdAt: '2026-11-10T09:00:00.000Z',
-    },
-  ],
+  users: [],
   projects: [],
   folders: [],
   documents: [],
@@ -204,20 +196,34 @@ export default function App() {
 
   // Student Account Session
   const [currentUser, setCurrentUser] = useState<StudentAccount | null>(null);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register'>(() =>
+    getInitialLocalWorkspace().users.length === 0 ? 'register' : 'login'
+  );
   const [authUsername, setAuthUsername] = useState<string>('');
   const [authDisplayName, setAuthDisplayName] = useState<string>('');
   const [authPassword, setAuthPassword] = useState<string>('');
   const [authRole, setAuthRole] = useState<string>('Estudiante de Informática');
   const [authError, setAuthError] = useState<string>('');
 
-  // Google Workspace OAuth State
+  // Google Workspace OAuth State & Guard Modal
   const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
   const [isGoogleLoggingIn, setIsGoogleLoggingIn] = useState<boolean>(false);
   const [syncBannerMessage, setSyncBannerMessage] = useState<string | null>(null);
   const [isSyncingDrive, setIsSyncingDrive] = useState<boolean>(false);
   const [isExtractingZip, setIsExtractingZip] = useState<boolean>(false);
+  const [googlePromptModal, setGooglePromptModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    description: string;
+    isFirstTime?: boolean;
+    onContinueLocal?: () => void;
+    continueLocalLabel?: string;
+  }>({
+    isOpen: false,
+    title: '',
+    description: '',
+  });
 
   // Hidden file & folder upload inputs
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -233,6 +239,15 @@ export default function App() {
   // Spacious Multi-Section Navigation (6 Dedicated Bento Tabs)
   const [activeSection, setActiveSection] = useState<BentoSectionTab>('overview');
   const [currentFolderId, setCurrentFolderId] = useState<string>('root');
+
+  // Create File from Google Docs/Sheets/Slides Share Link Modal
+  const [showCreateGoogleFileModal, setShowCreateGoogleFileModal] = useState<boolean>(false);
+  const [newGoogleFileName, setNewGoogleFileName] = useState<string>('');
+  const [newGoogleFileUrl, setNewGoogleFileUrl] = useState<string>('');
+  const [newGoogleFileKind, setNewGoogleFileKind] = useState<'docs' | 'sheets' | 'slides'>('docs');
+  const [newGoogleFileNotes, setNewGoogleFileNotes] = useState<string>('');
+  const [newGoogleFileAssignee, setNewGoogleFileAssignee] = useState<string>('');
+  const [newGoogleFileError, setNewGoogleFileError] = useState<string>('');
 
   // Link Shared Google Doc/Sheet/Slide Modal
   const [linkingDocItem, setLinkingDocItem] = useState<DocumentItem | null>(null);
@@ -548,6 +563,25 @@ export default function App() {
     [googleAccessToken, workspace]
   );
 
+  // Show first-time Google Sign-In prompt modal right after entering workspace
+  const maybeShowFirstTimeGooglePrompt = useCallback(
+    (username: string) => {
+      if (googleUserEmail) return;
+      const seenKey = `chikihub_google_welcome_seen_${username}`;
+      if (localStorage.getItem(seenKey) !== 'true') {
+        localStorage.setItem(seenKey, 'true');
+        setGooglePromptModal({
+          isOpen: true,
+          isFirstTime: true,
+          title: 'Conecta tu cuenta de Google para empezar',
+          description:
+            'Para subir archivos sincronizados con Google Drive, convertir documentos de Office automáticamente a Google Docs/Sheets/Slides y exportar la última versión editada, te recomendamos iniciar sesión con tu cuenta de Google ahora.',
+        });
+      }
+    },
+    [googleUserEmail]
+  );
+
   // Connect Google Account handler
   const handleGoogleConnect = async () => {
     setIsGoogleLoggingIn(true);
@@ -556,6 +590,7 @@ export default function App() {
       if (result) {
         setGoogleUserEmail(result.user.email || 'Conectado');
         setGoogleAccessToken(result.accessToken);
+        setGooglePromptModal((prev) => ({ ...prev, isOpen: false }));
         showToast('Google Drive y Google Docs conectados correctamente.');
       }
     } catch {
@@ -563,6 +598,144 @@ export default function App() {
     } finally {
       setIsGoogleLoggingIn(false);
     }
+  };
+
+  // Trigger file/folder upload with clear Google Sign-In card if not connected
+  const handleTriggerUpload = (mode: 'files' | 'folder') => {
+    const openPicker = () => {
+      if (mode === 'folder') {
+        folderInputRef.current?.click();
+      } else {
+        fileInputRef.current?.click();
+      }
+    };
+
+    if (!googleAccessToken) {
+      setGooglePromptModal({
+        isOpen: true,
+        title: 'Inicia sesión con Google para sincronizar con Drive',
+        description:
+          mode === 'folder'
+            ? 'Para subir carpetas completas sincronizadas con Google Drive y abrir sus documentos en Google Docs/Sheets/Slides, primero inicia sesión con Google.'
+            : 'Para subir archivos sincronizados con Google Drive y abrir documentos Office en Google Docs/Sheets/Slides, primero inicia sesión con Google.',
+        continueLocalLabel:
+          mode === 'folder'
+            ? 'Subir carpeta solo en local (sin Google Drive)'
+            : 'Subir archivos solo en local (sin Google Drive)',
+        onContinueLocal: () => {
+          setGooglePromptModal((prev) => ({ ...prev, isOpen: false }));
+          openPicker();
+        },
+      });
+      return;
+    }
+
+    openPicker();
+  };
+
+  // Open Create File (Google Link) Modal
+  const openCreateGoogleFileModal = () => {
+    if (!activeProject) return;
+    setNewGoogleFileName('');
+    setNewGoogleFileUrl('');
+    setNewGoogleFileKind('docs');
+    setNewGoogleFileNotes('');
+    setNewGoogleFileAssignee(
+      currentUser?.username || activeProject.authorizedUsernames[0] || ''
+    );
+    setNewGoogleFileError('');
+    setShowCreateGoogleFileModal(true);
+  };
+
+  // Auto-detect Google Docs / Sheets / Slides type when pasting share URL
+  const handleGoogleFileUrlChange = (url: string) => {
+    setNewGoogleFileUrl(url);
+    setNewGoogleFileError('');
+    const lower = url.toLowerCase();
+    if (lower.includes('/spreadsheets/')) {
+      setNewGoogleFileKind('sheets');
+    } else if (lower.includes('/presentation/')) {
+      setNewGoogleFileKind('slides');
+    } else if (lower.includes('/document/')) {
+      setNewGoogleFileKind('docs');
+    }
+  };
+
+  // Create a project file directly linked to a shared Google Docs / Sheets / Slides URL
+  const handleCreateGoogleLinkedFile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!workspace || !activeProject) return;
+    setNewGoogleFileError('');
+
+    const rawTitle = newGoogleFileName.trim();
+    const rawUrl = newGoogleFileUrl.trim();
+    if (!rawTitle) {
+      setNewGoogleFileError('Escribe un nombre para el archivo.');
+      return;
+    }
+    if (!rawUrl || (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://'))) {
+      setNewGoogleFileError(
+        'Pega el enlace completo de compartir de Google Docs, Sheets o Slides (debe empezar por https://).'
+      );
+      return;
+    }
+
+    const extMap = {
+      docs: {
+        ext: 'docx',
+        mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        label: 'Google Docs',
+      },
+      sheets: {
+        ext: 'xlsx',
+        mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        label: 'Google Sheets',
+      },
+      slides: {
+        ext: 'pptx',
+        mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        label: 'Google Slides',
+      },
+    } as const;
+
+    const chosen = extMap[newGoogleFileKind];
+    const hasKnownExt = /\.(docx|doc|odt|xlsx|xls|ods|csv|pptx|ppt|odp)$/i.test(rawTitle);
+    const finalTitle = hasKnownExt ? rawTitle : `${rawTitle}.${chosen.ext}`;
+    const parsedId = parseGoogleDocId(rawUrl);
+    const nowIso = new Date().toISOString();
+
+    const newDoc: DocumentItem = {
+      id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      projectId: activeProject.id,
+      ownerId: currentUser?.id || 'usr_member',
+      folderId: currentFolderId,
+      title: finalTitle,
+      extension: getFileExtension(finalTitle) || chosen.ext,
+      mimeType: chosen.mime,
+      sizeBytes: 24576,
+      content:
+        newGoogleFileNotes.trim() ||
+        `Documento compartido de ${chosen.label} vinculado al proyecto "${activeProject.name}".`,
+      googleDocId: parsedId,
+      googleDocUrl: rawUrl,
+      assigneeUsername: newGoogleFileAssignee || currentUser?.username || 'grupo',
+      assignedUsernames: [newGoogleFileAssignee || currentUser?.username || 'grupo'],
+      status: 'draft',
+      lastModifiedBy: currentUser?.username || 'grupo',
+      lastSyncedAt: nowIso,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    const updatedWorkspace: WorkspaceData = {
+      ...workspace,
+      documents: [newDoc, ...workspace.documents],
+    };
+
+    await saveWorkspace(updatedWorkspace);
+    await syncDocumentToFirestore(newDoc);
+    setShowCreateGoogleFileModal(false);
+    showToast(`Archivo "${newDoc.title}" creado y vinculado a ${chosen.label}.`);
   };
 
   // Student Account Login / Register Handler
@@ -587,7 +760,7 @@ export default function App() {
         setAuthError(
           currentWs.users.length > 0
             ? 'Usuario o contraseña incorrectos. Si eres nuevo, pulsa en "Crear Cuenta".'
-            : 'Todavía no hay usuarios. Cambia a "Crear Cuenta" para registrarte.'
+            : 'Todavía no hay usuarios registrados. Pulsa en "Crear Cuenta" para crear la tuya.'
         );
         return;
       }
@@ -598,6 +771,7 @@ export default function App() {
       }
       setAuthPassword('');
       showToast(`Sesión iniciada como @${existing.username}`);
+      maybeShowFirstTimeGooglePrompt(existing.username);
     } else {
       const alreadyExists = currentWs.users.some(
         (u) => u.username.toLowerCase() === cleanUsername
@@ -626,6 +800,7 @@ export default function App() {
       }
       setAuthPassword('');
       showToast(`Cuenta @${newUser.username} creada correctamente.`);
+      maybeShowFirstTimeGooglePrompt(newUser.username);
     }
   };
 
@@ -1099,8 +1274,17 @@ export default function App() {
       return;
     }
 
-    setLinkingDocItem(docItem);
-    setLinkGoogleUrlInput(docItem.googleDocUrl || '');
+    setGooglePromptModal({
+      isOpen: true,
+      title: `Inicia sesión con Google para abrir en ${getGoogleEditorLabel(editorKind)}`,
+      description: `Para subir y abrir "${docItem.title}" automáticamente en ${getGoogleEditorLabel(editorKind)}, primero debes iniciar sesión con tu cuenta de Google.`,
+      continueLocalLabel: 'O pegar un enlace compartido de Google manualmente',
+      onContinueLocal: () => {
+        setGooglePromptModal((prev) => ({ ...prev, isOpen: false }));
+        setLinkingDocItem(docItem);
+        setLinkGoogleUrlInput(docItem.googleDocUrl || '');
+      },
+    });
   };
 
   // Save a linked Google Docs/Sheets/Slides URL on a file
@@ -1148,6 +1332,24 @@ export default function App() {
       const ext = docItem.extension || getFileExtension(docItem.title) || 'txt';
       let blob: Blob | null = null;
 
+      if (docItem.googleDocId && getGoogleEditorKind(ext) && !googleAccessToken) {
+        setGooglePromptModal({
+          isOpen: true,
+          title: 'Inicia sesión con Google para descargar este documento',
+          description: `El archivo "${docItem.title}" está conectado con Google Docs/Sheets/Slides. Debes iniciar sesión con Google para exportar y descargar su última versión en formato .${ext.toUpperCase()}.`,
+          continueLocalLabel: docItem.googleDocUrl
+            ? 'Abrir el documento en Google en su lugar'
+            : undefined,
+          onContinueLocal: docItem.googleDocUrl
+            ? () => {
+                setGooglePromptModal((prev) => ({ ...prev, isOpen: false }));
+                window.open(docItem.googleDocUrl, '_blank', 'noopener,noreferrer');
+              }
+            : undefined,
+        });
+        return;
+      }
+
       if (docItem.googleDocId && googleAccessToken && getGoogleEditorKind(ext)) {
         showToast(`Extrayendo última versión de "${docItem.title}" desde Google Drive...`);
         blob = await exportGoogleWorkspaceFileBlob(docItem.googleDocId, ext, googleAccessToken);
@@ -1176,8 +1378,39 @@ export default function App() {
   };
 
   // Extract / Download an Entire Folder (and nested subfolders) as .ZIP
-  const handleExtractFolderAsZip = async (targetFolderId: string, folderLabel: string) => {
+  const handleExtractFolderAsZip = async (
+    targetFolderId: string,
+    folderLabel: string,
+    allowLocalOnly = false
+  ) => {
     if (!activeProject) return;
+
+    const collectDocsInTree = (folderId: string): DocumentItem[] => {
+      const direct = projectDocuments.filter((d) => d.folderId === folderId);
+      const children = projectFolders.filter((f) => f.parentId === folderId);
+      return [...direct, ...children.flatMap((c) => collectDocsInTree(c.id))];
+    };
+
+    const treeDocs = collectDocsInTree(targetFolderId);
+    const hasGoogleLinkedDocs = treeDocs.some((d) => {
+      const ext = d.extension || getFileExtension(d.title) || 'txt';
+      return Boolean(d.googleDocId && getGoogleEditorKind(ext));
+    });
+
+    if (hasGoogleLinkedDocs && !googleAccessToken && !allowLocalOnly) {
+      setGooglePromptModal({
+        isOpen: true,
+        title: 'Inicia sesión con Google para extraer esta carpeta en .ZIP',
+        description: `La carpeta "${folderLabel}" contiene documentos de Google Docs/Sheets/Slides. Inicia sesión con Google para incluir sus versiones actualizadas en el archivo .ZIP.`,
+        continueLocalLabel: 'Generar .ZIP solo con archivos locales disponibles',
+        onContinueLocal: () => {
+          setGooglePromptModal((prev) => ({ ...prev, isOpen: false }));
+          handleExtractFolderAsZip(targetFolderId, folderLabel, true);
+        },
+      });
+      return;
+    }
+
     setIsExtractingZip(true);
     try {
       const zip = new JSZip();
@@ -1735,31 +1968,6 @@ export default function App() {
                   </p>
                 </div>
               </div>
-
-              {/* Quick Demo Account Bar */}
-              {workspace && workspace.users.length > 0 && (
-                <div className="p-6 border-t border-[#22222A] bg-[#111116]">
-                  <p className="font-mono text-[11px] text-[#8E8E9E] mb-2.5">
-                    ACCESO RÁPIDO DE PRUEBA (CUENTAS DEL GRUPO):
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {workspace.users.map((u) => (
-                      <button
-                        key={u.id}
-                        type="button"
-                        onClick={() => {
-                          setCurrentUser(u);
-                          localStorage.setItem('chikihub_logged_user', u.username);
-                          showToast(`Sesión iniciada como @${u.username}`);
-                        }}
-                        className="px-3.5 py-2 bg-[#09090B] hover:bg-white hover:text-[#09090B] border border-[#2A2A35] text-xs font-mono text-[#D4D4DC] transition-colors cursor-pointer whitespace-nowrap shrink-0"
-                      >
-                        @{u.username}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* Right Bento Column (5 cols): Login / Create Account Form */}
@@ -2101,6 +2309,34 @@ export default function App() {
 
       {/* ==================== MAIN SPACIOUS CONTAINER ==================== */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-8 py-8">
+        {/* Persistent Google Sign-In Reminder Strip when Google is not yet connected */}
+        {!googleUserEmail && (
+          <div className="mb-6 border border-[#3B82F6]/40 bg-[#0E0E12] px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start sm:items-center gap-3">
+              <div className="w-8 h-8 border border-[#3B82F6]/50 bg-[#3B82F6]/10 flex items-center justify-center text-[#60A5FA] shrink-0">
+                <HardDrive className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="font-mono text-[11px] text-[#60A5FA] uppercase font-bold">
+                  CONEXIÓN GOOGLE RECOMENDADA
+                </p>
+                <p className="text-xs text-[#C4C4D0]">
+                  Inicia sesión con tu cuenta de Google para sincronizar archivos con Google Drive,
+                  abrir documentos Office en Google Docs y exportar versiones actualizadas.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleGoogleConnect}
+              disabled={isGoogleLoggingIn}
+              className="h-9 px-4 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider whitespace-nowrap shrink-0 cursor-pointer self-start sm:self-auto"
+            >
+              {isGoogleLoggingIn ? 'Conectando...' : 'Iniciar Sesión con Google'}
+            </button>
+          </div>
+        )}
+
         {!activeProject && activeSection !== 'projects' ? (
           <div className="border border-[#22222A] bg-[#0E0E12] p-12 text-center">
             <Folder className="w-10 h-10 text-[#60A5FA] mx-auto mb-3" />
@@ -2435,17 +2671,26 @@ export default function App() {
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
                     <button
                       type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={isSyncingDrive}
+                      onClick={openCreateGoogleFileModal}
                       className="h-10 px-4 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
                     >
-                      <Upload className="w-4 h-4" />
+                      <FilePlus2 className="w-4 h-4" />
+                      <span>Crear Archivo (Google)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleTriggerUpload('files')}
+                      disabled={isSyncingDrive}
+                      className="h-10 px-4 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-white font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Upload className="w-4 h-4 text-[#60A5FA]" />
                       <span>Subir Archivos</span>
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => folderInputRef.current?.click()}
+                      onClick={() => handleTriggerUpload('folder')}
                       disabled={isSyncingDrive}
                       className="h-10 px-4 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-white font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
                     >
@@ -2597,21 +2842,29 @@ export default function App() {
                         Esta carpeta aún no tiene archivos
                       </p>
                       <p className="text-xs sm:text-sm text-[#8E8E9E] mb-6 max-w-md mx-auto">
-                        Sube cualquier archivo (.DOCX, .XLSX, .PPTX, .PKT, .PDF, .ZIP) o una carpeta
-                        completa desde tu ordenador.
+                        Crea un documento pegando el enlace compartido de Google Docs/Sheets/Slides
+                        o sube cualquier archivo o carpeta completa desde tu ordenador.
                       </p>
-                      <div className="flex justify-center gap-3">
+                      <div className="flex flex-wrap justify-center gap-3">
                         <button
                           type="button"
-                          onClick={() => fileInputRef.current?.click()}
+                          onClick={openCreateGoogleFileModal}
                           className="px-5 py-2.5 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 cursor-pointer"
                         >
-                          <Upload className="w-4 h-4" />
+                          <FilePlus2 className="w-4 h-4" />
+                          <span>Crear Archivo (Google)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleTriggerUpload('files')}
+                          className="px-5 py-2.5 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-white font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 cursor-pointer"
+                        >
+                          <Upload className="w-4 h-4 text-[#60A5FA]" />
                           <span>Subir Archivos</span>
                         </button>
                         <button
                           type="button"
-                          onClick={() => folderInputRef.current?.click()}
+                          onClick={() => handleTriggerUpload('folder')}
                           className="px-5 py-2.5 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-white font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 cursor-pointer"
                         >
                           <FolderUp className="w-4 h-4 text-[#60A5FA]" />
@@ -3424,6 +3677,200 @@ export default function App() {
           </>
         )}
       </main>
+
+      {/* ==================== MODAL: AVISO INICIO DE SESIÓN CON GOOGLE REQUERIDO ==================== */}
+      {googlePromptModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <div className="w-full max-w-md border border-[#3B82F6]/60 bg-[#0E0E12] p-6 space-y-5">
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-[#22222A]">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 border border-[#3B82F6]/50 bg-[#3B82F6]/15 flex items-center justify-center text-[#60A5FA] shrink-0">
+                  <HardDrive className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="font-mono text-[10px] text-[#60A5FA] uppercase block">
+                    {googlePromptModal.isFirstTime
+                      ? 'PRIMER ACCESO · GOOGLE DRIVE & DOCS'
+                      : 'ACCIÓN REQUIERE CUENTA DE GOOGLE'}
+                  </span>
+                  <h3 className="font-display font-bold text-sm text-white">
+                    {googlePromptModal.title}
+                  </h3>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setGooglePromptModal((prev) => ({ ...prev, isOpen: false }))}
+                className="p-1 text-[#8E8E9E] hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs sm:text-sm text-[#B4B4C2] leading-relaxed">
+              {googlePromptModal.description}
+            </p>
+
+            <div className="space-y-2.5 pt-1">
+              <GoogleSignInButton
+                onClick={handleGoogleConnect}
+                isLoading={isGoogleLoggingIn}
+                label="Iniciar sesión con Google ahora"
+              />
+
+              {googlePromptModal.onContinueLocal && googlePromptModal.continueLocalLabel && (
+                <button
+                  type="button"
+                  onClick={() => googlePromptModal.onContinueLocal?.()}
+                  className="w-full h-10 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-xs text-[#D4D4DC] font-medium transition-colors cursor-pointer"
+                >
+                  {googlePromptModal.continueLocalLabel}
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setGooglePromptModal((prev) => ({ ...prev, isOpen: false }))}
+                className="w-full h-9 text-xs text-[#8E8E9E] hover:text-white transition-colors cursor-pointer"
+              >
+                {googlePromptModal.isFirstTime ? 'Más tarde' : 'Cancelar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== MODAL: CREAR ARCHIVO CON ENLACE COMPARTIDO DE GOOGLE ==================== */}
+      {showCreateGoogleFileModal && activeProject && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 overflow-y-auto">
+          <div className="w-full max-w-lg border border-[#2E2E3A] bg-[#0E0E12] p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[#22222A]">
+              <div>
+                <span className="font-mono text-[10px] text-[#60A5FA] uppercase block">
+                  NUEVO ARCHIVO COMPARTIDO DEL PROYECTO
+                </span>
+                <h3 className="font-display font-bold text-sm uppercase tracking-wider text-white">
+                  Crear Archivo con Enlace de Google Docs / Sheets / Slides
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateGoogleFileModal(false)}
+                className="p-1 text-[#8E8E9E] hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-[#9E9EAE] leading-relaxed">
+              Pega el <strong>enlace para compartir</strong> que te da Google Docs, Sheets o Slides.
+              Cuando cualquier compañero del grupo abra este archivo desde ChikiHub, se abrirá
+              directamente ese documento compartido para editar juntos.
+            </p>
+
+            <form onSubmit={handleCreateGoogleLinkedFile} className="space-y-3.5">
+              <div>
+                <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1">
+                  Enlace de compartir de Google (obligatorio)
+                </label>
+                <input
+                  type="url"
+                  required
+                  value={newGoogleFileUrl}
+                  onChange={(e) => handleGoogleFileUrlChange(e.target.value)}
+                  placeholder="https://docs.google.com/document/d/.../edit?usp=sharing"
+                  className="w-full h-10 px-3 bg-[#09090B] border border-[#2A2A35] text-xs text-white focus:outline-none focus:border-white"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1">
+                    Nombre del archivo
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newGoogleFileName}
+                    onChange={(e) => setNewGoogleFileName(e.target.value)}
+                    placeholder="ej. Memoria_Servidor_Linux"
+                    className="w-full h-10 px-3 bg-[#09090B] border border-[#2A2A35] text-xs text-white focus:outline-none focus:border-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1">
+                    Tipo de documento
+                  </label>
+                  <select
+                    value={newGoogleFileKind}
+                    onChange={(e) =>
+                      setNewGoogleFileKind(e.target.value as 'docs' | 'sheets' | 'slides')
+                    }
+                    className="w-full h-10 px-3 bg-[#09090B] border border-[#2A2A35] text-xs text-white focus:outline-none focus:border-white"
+                  >
+                    <option value="docs">Google Docs (.docx)</option>
+                    <option value="sheets">Google Sheets (.xlsx)</option>
+                    <option value="slides">Google Slides (.pptx)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1">
+                  Responsable inicial
+                </label>
+                <select
+                  value={newGoogleFileAssignee}
+                  onChange={(e) => setNewGoogleFileAssignee(e.target.value)}
+                  className="w-full h-10 px-3 bg-[#09090B] border border-[#2A2A35] text-xs text-white focus:outline-none focus:border-white"
+                >
+                  {activeProject.authorizedUsernames.map((u) => (
+                    <option key={u} value={u}>
+                      @{u}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1">
+                  Notas / descripción breve para la IA del proyecto (opcional)
+                </label>
+                <textarea
+                  rows={2}
+                  value={newGoogleFileNotes}
+                  onChange={(e) => setNewGoogleFileNotes(e.target.value)}
+                  placeholder="ej. Memoria principal con los apartados de instalación, VLANs y capturas."
+                  className="w-full p-3 bg-[#09090B] border border-[#2A2A35] text-xs text-white focus:outline-none focus:border-white"
+                />
+              </div>
+
+              {newGoogleFileError && (
+                <div className="p-2.5 border border-rose-500/40 bg-rose-500/10 text-xs text-rose-300">
+                  {newGoogleFileError}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateGoogleFileModal(false)}
+                  className="px-4 py-2 border border-[#2A2A35] bg-[#14141A] text-xs text-[#C4C4D0] cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider cursor-pointer"
+                >
+                  Crear Archivo Vinculado
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* ==================== MODAL: VINCULAR ENLACE GOOGLE DOCS A ARCHIVO ==================== */}
       {linkingDocItem && (
