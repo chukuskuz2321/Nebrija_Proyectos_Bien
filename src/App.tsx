@@ -2344,6 +2344,24 @@ export default function App() {
     return Math.max(0, Math.ceil((due - now) / (1000 * 60 * 60 * 24)));
   }, [activeProject]);
 
+  // Filtered list for Tab 07 · Explorar Proyectos (must stay before early returns)
+  const exploredProjects = useMemo(() => {
+    const q = exploreSearchQuery.trim().toLowerCase();
+    return (workspace?.projects || []).filter((proj) => {
+      const isMember = isUserMemberOfProject(proj, currentUser);
+      if (exploreFilter === 'open' && proj.hasPassword) return false;
+      if (exploreFilter === 'protected' && !proj.hasPassword) return false;
+      if (exploreFilter === 'others' && isMember) return false;
+      if (!q) return true;
+      return (
+        proj.name.toLowerCase().includes(q) ||
+        proj.subject.toLowerCase().includes(q) ||
+        proj.description.toLowerCase().includes(q) ||
+        proj.ownerUsername.toLowerCase().includes(q)
+      );
+    });
+  }, [workspace?.projects, exploreSearchQuery, exploreFilter, isUserMemberOfProject, currentUser]);
+
   // PUBLIC LEGAL ROUTES (/privacidad, /privacy, /terminos, /terms) — Always accessible without login
   if (currentPath === '/privacidad' || currentPath === '/privacy') {
     return <LegalPages page="privacy" onNavigate={navigateTo} />;
@@ -2859,24 +2877,6 @@ export default function App() {
       count: `${workspace?.projects.length || 0}`,
     },
   ];
-
-  // Filtered list for Tab 07 · Explorar Proyectos
-  const exploredProjects = useMemo(() => {
-    const q = exploreSearchQuery.trim().toLowerCase();
-    return (workspace?.projects || []).filter((proj) => {
-      const isMember = isUserMemberOfProject(proj, currentUser);
-      if (exploreFilter === 'open' && proj.hasPassword) return false;
-      if (exploreFilter === 'protected' && !proj.hasPassword) return false;
-      if (exploreFilter === 'others' && isMember) return false;
-      if (!q) return true;
-      return (
-        proj.name.toLowerCase().includes(q) ||
-        proj.subject.toLowerCase().includes(q) ||
-        proj.description.toLowerCase().includes(q) ||
-        proj.ownerUsername.toLowerCase().includes(q)
-      );
-    });
-  }, [workspace?.projects, exploreSearchQuery, exploreFilter, isUserMemberOfProject, currentUser]);
 
   // 3. MAIN SPACIOUS MULTI-TAB BENTO WORKSPACE
   return (
