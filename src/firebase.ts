@@ -20,6 +20,7 @@ import {
   where,
   serverTimestamp,
   Timestamp,
+  arrayUnion,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 import {
@@ -139,11 +140,7 @@ export const initAuth = (
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        if (onAuthSuccess) onAuthSuccess(user, null);
-      }
+      if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
     } else {
       cachedAccessToken = null;
       if (onAuthFailure) onAuthFailure();
@@ -436,11 +433,62 @@ export async function joinProjectInFirestore(
   }
 }
 
+export async function removeMemberFromProjectInFirestore(
+  project: ProjectItem,
+  targetUsername: string,
+  targetUid?: string
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return false;
+  const uid = auth.currentUser.uid;
+  const projectId = sanitizeId(project.id);
+  const path = `projects/${projectId}`;
+  const projectRef = doc(db, 'projects', projectId);
+
+  try {
+    const snap = await getDoc(projectRef);
+    if (!snap.exists()) return false;
+    const data = snap.data();
+
+    // Only the project creator can remove members, and the creator cannot remove themselves
+    if (data.ownerId !== uid) return false;
+    const ownerUname = String(data.ownerUsername || '').toLowerCase().trim();
+    const targetLower = targetUsername.toLowerCase().trim();
+    if (!targetLower || targetLower === ownerUname) return false;
+
+    const currentUsernames: string[] = Array.isArray(data.authorizedUsernames)
+      ? data.authorizedUsernames.map(String)
+      : [ownerUname];
+    const nextUsernames = currentUsernames.filter(
+      (u) => u.toLowerCase().trim() !== targetLower || u.toLowerCase().trim() === ownerUname
+    );
+    if (nextUsernames.length === 0) nextUsernames.push(ownerUname);
+
+    const currentUids: string[] = Array.isArray(data.memberUids)
+      ? data.memberUids.map(String)
+      : [uid];
+    const nextUids = currentUids.filter(
+      (id) => id === data.ownerId || (targetUid ? id !== targetUid : true)
+    );
+    if (!nextUids.includes(data.ownerId)) nextUids.unshift(data.ownerId);
+
+    await updateDoc(projectRef, {
+      authorizedUsernames: nextUsernames.slice(0, 50),
+      memberUids: nextUids.slice(0, 50),
+      updatedAt: serverTimestamp(),
+    });
+    return true;
+  } catch (error) {
+    logFirestoreError(error, OperationType.UPDATE, path);
+    return false;
+  }
+}
+
 export async function deleteProjectFromFirestore(projectId: string): Promise<boolean> {
   if (!auth.currentUser || !auth.currentUser.emailVerified) return false;
   const pId = sanitizeId(projectId);
   try {
     await deleteDoc(doc(db, 'projects', pId, 'state', 'main')).catch(() => {});
+    await deleteDoc(doc(db, 'projects', pId, 'state', 'chat')).catch(() => {});
     await deleteDoc(doc(db, 'projects', pId));
     return true;
   } catch (error) {
@@ -547,23 +595,172 @@ export function subscribeToProjectWorkspaceState(
   const pId = sanitizeId(projectId);
   const path = `projects/${pId}/state/main`;
   const stateRef = doc(db, 'projects', pId, 'state', 'main');
-  return onSnapshot(
-    stateRef,
-    (snap) => {
-      if (!snap.exists()) return;
-      const data = snap.data();
-      onState({
-        folders: Array.isArray(data.folders) ? (data.folders as FolderItem[]) : [],
-        documents: Array.isArray(data.documents) ? (data.documents as DocumentItem[]) : [],
-        tasks: Array.isArray(data.tasks) ? (data.tasks as TaskItem[]) : [],
-        notices: Array.isArray(data.notices) ? (data.notices as NoticeItem[]) : [],
-        messages: Array.isArray(data.messages) ? (data.messages as ChatMessageItem[]) : [],
-      });
-    },
-    (error) => {
-      logFirestoreError(error, OperationType.GET, path);
+
+  let active = true;
+  let currentUnsub: (() => void) | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retries = 0;
+
+  const attach = () => {
+    if (!active) return;
+    currentUnsub = onSnapshot(
+      stateRef,
+      (snap) => {
+        retries = 0;
+        if (!snap.exists()) return;
+        const data = snap.data();
+        onState({
+          folders: Array.isArray(data.folders) ? (data.folders as FolderItem[]) : [],
+          documents: Array.isArray(data.documents) ? (data.documents as DocumentItem[]) : [],
+          tasks: Array.isArray(data.tasks) ? (data.tasks as TaskItem[]) : [],
+          notices: Array.isArray(data.notices) ? (data.notices as NoticeItem[]) : [],
+          messages: Array.isArray(data.messages) ? (data.messages as ChatMessageItem[]) : [],
+        });
+      },
+      (error) => {
+        if (!active) return;
+        if (retries < 4) {
+          retries += 1;
+          retryTimer = setTimeout(attach, 900 * retries);
+        } else {
+          logFirestoreError(error, OperationType.GET, path);
+        }
+      }
+    );
+  };
+
+  attach();
+
+  return () => {
+    active = false;
+    if (retryTimer) clearTimeout(retryTimer);
+    if (currentUnsub) currentUnsub();
+  };
+}
+
+// ==================== 3B. DEDICATED REAL-TIME PROJECT CHAT (ATOMIC arrayUnion) ====================
+
+export async function sendProjectChatMessageInFirestore(
+  projectId: string,
+  message: ChatMessageItem
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !projectId) return false;
+  const uid = auth.currentUser.uid;
+  const pId = sanitizeId(projectId);
+  const path = `projects/${pId}/state/chat`;
+  const chatRef = doc(db, 'projects', pId, 'state', 'chat');
+
+  const cleanMsg: ChatMessageItem = {
+    id: sanitizeId(message.id),
+    projectId: pId,
+    ownerId: uid,
+    senderUsername: cleanUsername(message.senderUsername || 'estudiante'),
+    text: (message.text || '').slice(0, 1000),
+    createdAt: message.createdAt || new Date().toISOString(),
+  };
+
+  try {
+    // Fast atomic append — multiple teammates chatting simultaneously NEVER overwrite each other!
+    await updateDoc(chatRef, {
+      updatedBy: uid,
+      messages: arrayUnion(cleanMsg),
+      updatedAt: serverTimestamp(),
+    });
+    return true;
+  } catch (updateErr: any) {
+    const code = String(updateErr?.code || updateErr?.message || '');
+    if (code.includes('not-found') || code.includes('No document to update')) {
+      try {
+        await setDoc(chatRef, {
+          projectId: pId,
+          updatedBy: uid,
+          folders: [],
+          documents: [],
+          tasks: [],
+          notices: [],
+          messages: [cleanMsg],
+          updatedAt: serverTimestamp(),
+        });
+        return true;
+      } catch (createErr) {
+        logFirestoreError(createErr, OperationType.CREATE, path);
+        return false;
+      }
     }
-  );
+
+    // If list hit the 300-message cap, trim oldest 50 messages and append cleanly
+    try {
+      const snap = await getDoc(chatRef);
+      if (snap.exists()) {
+        const existingMsgs: ChatMessageItem[] = Array.isArray(snap.data().messages)
+          ? (snap.data().messages as ChatMessageItem[])
+          : [];
+        if (existingMsgs.length >= 295) {
+          const trimmed = [...existingMsgs.slice(-240), cleanMsg];
+          await updateDoc(chatRef, {
+            updatedBy: uid,
+            messages: trimmed,
+            updatedAt: serverTimestamp(),
+          });
+          return true;
+        }
+      }
+    } catch {
+      // fall through to structured log
+    }
+
+    logFirestoreError(updateErr, OperationType.UPDATE, path);
+    return false;
+  }
+}
+
+export function subscribeToProjectChat(
+  projectId: string,
+  onMessages: (messages: ChatMessageItem[]) => void
+): () => void {
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !projectId) return () => {};
+  const pId = sanitizeId(projectId);
+  const path = `projects/${pId}/state/chat`;
+  const chatRef = doc(db, 'projects', pId, 'state', 'chat');
+
+  let active = true;
+  let currentUnsub: (() => void) | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retries = 0;
+
+  const attach = () => {
+    if (!active) return;
+    currentUnsub = onSnapshot(
+      chatRef,
+      (snap) => {
+        retries = 0;
+        if (!snap.exists()) {
+          onMessages([]);
+          return;
+        }
+        const data = snap.data();
+        const msgs = Array.isArray(data.messages) ? (data.messages as ChatMessageItem[]) : [];
+        onMessages(msgs);
+      },
+      (error) => {
+        if (!active) return;
+        if (retries < 4) {
+          retries += 1;
+          retryTimer = setTimeout(attach, 900 * retries);
+        } else {
+          logFirestoreError(error, OperationType.GET, path);
+        }
+      }
+    );
+  };
+
+  attach();
+
+  return () => {
+    active = false;
+    if (retryTimer) clearTimeout(retryTimer);
+    if (currentUnsub) currentUnsub();
+  };
 }
 
 // ==================== 4. REAL-TIME PROJECT INVITATIONS ====================

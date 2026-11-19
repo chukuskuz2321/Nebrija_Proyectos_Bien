@@ -5,22 +5,28 @@ import { StudentAccount } from '../types';
 interface UserInvitePickerProps {
   allUsers: StudentAccount[];
   currentUsername: string;
+  ownerUsername?: string;
   existingMemberUsernames: string[];
   pendingInviteUsernames?: string[];
   selectedUsers: StudentAccount[];
   onAddUser: (user: StudentAccount) => void;
   onRemoveUser: (username: string) => void;
+  canKickMembers?: boolean;
+  onKickMember?: (username: string) => void;
   label?: string;
 }
 
 export const UserInvitePicker: React.FC<UserInvitePickerProps> = ({
   allUsers,
   currentUsername,
+  ownerUsername,
   existingMemberUsernames,
   pendingInviteUsernames = [],
   selectedUsers,
   onAddUser,
   onRemoveUser,
+  canKickMembers = false,
+  onKickMember,
   label = 'Invitar compañeros (busca usuarios registrados)',
 }) => {
   const [query, setQuery] = useState('');
@@ -171,23 +177,47 @@ export const UserInvitePicker: React.FC<UserInvitePickerProps> = ({
 
       {/* Existing Members & Pending Invites Summary */}
       {(existingMemberUsernames.length > 0 || pendingInviteUsernames.length > 0) && (
-        <div className="flex flex-wrap gap-1.5 pt-1">
-          {existingMemberUsernames.map((uname) => (
-            <span
-              key={`member_${uname}`}
-              className="inline-flex items-center gap-1 px-2 py-0.5 border border-[#2A2A35] bg-[#14141A] font-mono text-[10px] text-[#C4C4D0]"
-            >
-              <Shield className="w-2.5 h-2.5 text-emerald-400" />@{uname}
-            </span>
-          ))}
-          {pendingInviteUsernames.map((uname) => (
-            <span
-              key={`pending_${uname}`}
-              className="inline-flex items-center gap-1 px-2 py-0.5 border border-amber-500/30 bg-amber-500/10 font-mono text-[10px] text-amber-300"
-            >
-              <Clock className="w-2.5 h-2.5" />@{uname} (pendiente)
-            </span>
-          ))}
+        <div className="space-y-1.5 pt-1">
+          <span className="font-mono text-[10px] uppercase text-[#8E8E9E] block">
+            MIEMBROS ACTUALES DEL PROYECTO ({existingMemberUsernames.length}):
+          </span>
+          <div className="flex flex-wrap gap-1.5">
+            {existingMemberUsernames.map((uname) => {
+              const isOwnerChip =
+                ownerUsername && uname.toLowerCase().trim() === ownerUsername.toLowerCase().trim();
+              return (
+                <span
+                  key={`member_${uname}`}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 border border-[#2A2A35] bg-[#14141A] font-mono text-[11px] text-[#E4E4EC]"
+                >
+                  <Shield className="w-3 h-3 text-emerald-400 shrink-0" />
+                  <span>@{uname}</span>
+                  {isOwnerChip && (
+                    <span className="text-[9px] uppercase text-[#60A5FA]">creador</span>
+                  )}
+                  {canKickMembers && !isOwnerChip && onKickMember && (
+                    <button
+                      type="button"
+                      onClick={() => onKickMember(uname)}
+                      title={`Expulsar a @${uname} del proyecto`}
+                      aria-label={`Expulsar a @${uname} del proyecto`}
+                      className="ml-0.5 p-0.5 text-[#8E8E9E] hover:text-rose-400 transition-colors cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </span>
+              );
+            })}
+            {pendingInviteUsernames.map((uname) => (
+              <span
+                key={`pending_${uname}`}
+                className="inline-flex items-center gap-1 px-2.5 py-1 border border-amber-500/30 bg-amber-500/10 font-mono text-[11px] text-amber-300"
+              >
+                <Clock className="w-3 h-3" />@{uname} (pendiente)
+              </span>
+            ))}
+          </div>
         </div>
       )}
     </div>

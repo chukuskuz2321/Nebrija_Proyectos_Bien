@@ -45,6 +45,7 @@ import {
   Check,
   Clock,
   Zap,
+  UserMinus,
 } from 'lucide-react';
 import {
   WorkspaceData,
@@ -55,6 +56,7 @@ import {
   DocumentItem,
   TaskItem,
   NoticeItem,
+  ChatMessageItem,
   TaskStatus,
   NoticePriority,
   MAX_ACTIVE_PROJECTS,
@@ -74,9 +76,12 @@ import {
   subscribeToClassProjects,
   syncProjectToFirestore,
   joinProjectInFirestore,
+  removeMemberFromProjectInFirestore,
   deleteProjectFromFirestore,
   syncProjectWorkspaceStateToFirestore,
   subscribeToProjectWorkspaceState,
+  sendProjectChatMessageInFirestore,
+  subscribeToProjectChat,
   createProjectInvitationInFirestore,
   respondToInvitationInFirestore,
   subscribeToUserInvitations,
@@ -442,9 +447,12 @@ export default function App() {
   const [newNoticePriority, setNewNoticePriority] = useState<NoticePriority>('important');
   const [newNoticeTarget, setNewNoticeTarget] = useState<string>('all');
 
-  // AI & Chat state
+  // AI & Real-Time Chat state
   const [commMode, setCommMode] = useState<'ai' | 'chat'>('ai');
   const [chatInput, setChatInput] = useState<string>('');
+  const [liveChatByProject, setLiveChatByProject] = useState<Record<string, ChatMessageItem[]>>({});
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const lastViewedProjectRef = useRef<{ id: string; name: string } | null>(null);
   const [aiMessages, setAiMessages] = useState<
     { id: string; role: 'user' | 'assistant'; text: string; timestamp: string }[]
   >([
@@ -504,26 +512,35 @@ export default function App() {
     setIsLoadingWorkspace(false);
   }, []);
 
-  // Initialize Firebase Google Auth listener (individual personal accounts across ALL browsers & devices)
-  useEffect(() => {
-    let active = true;
-    const unsubscribe = initAuth(
-      async (user, token) => {
-        if (!active) return;
-        setFirebaseUid(user.uid);
-        setGoogleUserEmail(user.email || 'Conectado con Google');
-        if (token) setGoogleAccessToken(token);
+  const hydratingUidRef = useRef<string | null>(null);
 
-        // Fetch this user's personal profile directly from Firestore /users/{uid}
+  // Shared immediate session hydrator: transitions straight into workspace OR first-time @username setup (zero refresh!)
+  const hydrateGoogleSession = useCallback(
+    async (
+      user: { uid: string; email?: string | null; displayName?: string | null },
+      token: string | null
+    ) => {
+      if (!user?.uid) return;
+      setFirebaseUid(user.uid);
+      setGoogleUserEmail(user.email || 'Conectado con Google');
+      if (token) setGoogleAccessToken(token);
+
+      // Avoid parallel duplicate fetches for the same UID
+      if (hydratingUidRef.current === user.uid) return;
+      hydratingUidRef.current = user.uid;
+
+      try {
         const cloudProfile = await getMyUserProfileFromFirestore(user.uid);
-        if (!active) return;
+        // Make sure auth user hasn't signed out while awaiting
+        if (auth.currentUser?.uid !== user.uid) return;
 
         if (cloudProfile) {
           setCurrentUser(cloudProfile);
           setNeedsProfileSetup(false);
+          setAuthError('');
           localStorage.setItem('chikihub_logged_user', cloudProfile.username);
         } else {
-          // First time signing in with this Google account: ask for personal @username & role
+          // First time signing in with this Google account: immediately reveal @username setup form
           const emailPrefix = (user.email || 'estudiante').split('@')[0];
           setAuthUsername(cleanUsername(emailPrefix));
           setAuthDisplayName(user.displayName || emailPrefix);
@@ -531,11 +548,29 @@ export default function App() {
           setAuthError('');
           setCurrentUser(null);
           setNeedsProfileSetup(true);
+          window.setTimeout(() => {
+            document.getElementById('acceso-grupo')?.scrollIntoView({ behavior: 'smooth' });
+          }, 80);
         }
+      } finally {
+        hydratingUidRef.current = null;
         setFirebaseAuthChecked(true);
+      }
+    },
+    []
+  );
+
+  // Initialize Firebase Google Auth listener (individual personal accounts across ALL browsers & devices)
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = initAuth(
+      async (user, token) => {
+        if (!active) return;
+        await hydrateGoogleSession(user, token);
       },
       () => {
         if (!active) return;
+        hydratingUidRef.current = null;
         setFirebaseUid(null);
         setGoogleUserEmail(null);
         setGoogleAccessToken(null);
@@ -551,7 +586,7 @@ export default function App() {
       active = false;
       unsubscribe();
     };
-  }, []);
+  }, [hydrateGoogleSession]);
 
   // Real-time Firestore subscriptions (Authoritative Cloud Source of Truth — instant sync across browsers)
   useEffect(() => {
@@ -627,16 +662,29 @@ export default function App() {
     [selectedProjectId]
   );
 
+  // Check if user is the creator/owner of a project
+  const isProjectOwner = useCallback(
+    (project: ProjectItem | null): boolean => {
+      if (!project || !currentUser) return false;
+      if (firebaseUid && project.ownerId) {
+        return project.ownerId === firebaseUid;
+      }
+      return project.ownerUsername.toLowerCase().trim() === currentUser.username.toLowerCase().trim();
+    },
+    [firebaseUid, currentUser]
+  );
+
   // Check if user is an authorized member of a project
+  // CRITICAL: When connected to Firebase, NEVER let stale local unlockedProjectIds override creator removal!
   const isUserMemberOfProject = useCallback(
     (project: ProjectItem | null, user: StudentAccount | null): boolean => {
       if (!project || !user) return false;
       if (firebaseUid && project.ownerId === firebaseUid) return true;
       if (firebaseUid && project.memberUids?.includes(firebaseUid)) return true;
-      if (unlockedProjectIds.includes(project.id)) return true;
       const uname = user.username.toLowerCase().trim();
       if (project.ownerUsername.toLowerCase().trim() === uname) return true;
       if (project.authorizedUsernames.some((u) => u.toLowerCase().trim() === uname)) return true;
+      if (!firebaseUid && unlockedProjectIds.includes(project.id)) return true;
       return false;
     },
     [unlockedProjectIds, firebaseUid]
@@ -665,17 +713,47 @@ export default function App() {
     return myProjects[0] || null;
   }, [workspace, selectedProjectId, myProjects, currentUser, isUserMemberOfProject]);
 
+  // Confirmed Firestore membership gate (ensures listeners attach/re-attach cleanly once memberUids is synced)
+  const isConfirmedCloudMember = useMemo(() => {
+    if (!firebaseUid || !activeProject) return false;
+    return (
+      activeProject.ownerId === firebaseUid ||
+      (Array.isArray(activeProject.memberUids) && activeProject.memberUids.includes(firebaseUid))
+    );
+  }, [firebaseUid, activeProject]);
+
+  // Real-time Kick Detection: if creator removes this user from the currently open project, revoke immediately
+  useEffect(() => {
+    if (!currentUser || !firebaseUid) return;
+    if (activeProject) {
+      lastViewedProjectRef.current = { id: activeProject.id, name: activeProject.name };
+      return;
+    }
+    const prevViewed = lastViewedProjectRef.current;
+    if (prevViewed) {
+      const stillExists = workspace.projects.find((p) => p.id === prevViewed.id);
+      if (stillExists && !isUserMemberOfProject(stillExists, currentUser)) {
+        lastViewedProjectRef.current = null;
+        setUnlockedProjectIds((prev) => prev.filter((id) => id !== stillExists.id));
+        if (selectedProjectId === stillExists.id) {
+          setSelectedProjectId('');
+        }
+        showToast(`Has sido eliminado del proyecto «${stillExists.name}» por su creador.`);
+      }
+    }
+  }, [activeProject, workspace.projects, currentUser, firebaseUid, isUserMemberOfProject, selectedProjectId, showToast]);
+
   // Keep activeProjectIdRef always synchronized for instant Firestore writes
   useEffect(() => {
     activeProjectIdRef.current = activeProject?.id || '';
   }, [activeProject?.id]);
 
-  // Subscribe to real-time shared Firestore state of activeProject
+  // Subscribe to real-time shared Firestore state of activeProject (folders, files, tasks, notices)
   // CRITICAL: Replace arrays authoritatively so DELETIONS by teammates vanish in milliseconds!
   useEffect(() => {
-    if (!firebaseUid || !activeProject?.id) return;
+    if (!firebaseUid || !activeProject?.id || !isConfirmedCloudMember) return;
     const pId = activeProject.id;
-    const unsub = subscribeToProjectWorkspaceState(pId, (cloudState) => {
+    const unsubState = subscribeToProjectWorkspaceState(pId, (cloudState) => {
       setWorkspace((prev) => {
         // Preserve large local binary dataUrls ONLY for documents that still exist in cloudState
         const localBlobById = new Map<string, string>();
@@ -703,8 +781,20 @@ export default function App() {
         return next;
       });
     });
-    return () => unsub();
-  }, [firebaseUid, activeProject?.id]);
+
+    // Dedicated real-time chat stream (/projects/{pId}/state/chat) — atomic & instant!
+    const unsubChat = subscribeToProjectChat(pId, (cloudMessages) => {
+      setLiveChatByProject((prev) => ({
+        ...prev,
+        [pId]: cloudMessages,
+      }));
+    });
+
+    return () => {
+      unsubState();
+      unsubChat();
+    };
+  }, [firebaseUid, activeProject?.id, isConfirmedCloudMember]);
 
   // Pending & All Invitations for current logged-in user
   const myIncomingInvitations = useMemo(() => {
@@ -767,13 +857,25 @@ export default function App() {
     [workspace, activeProject]
   );
 
-  const projectMessages = useMemo(
-    () =>
-      workspace && activeProject
-        ? workspace.messages.filter((m) => m.projectId === activeProject.id)
-        : [],
-    [workspace, activeProject]
-  );
+  // Merge live real-time chat doc messages + any legacy messages from state/main, sorted chronologically
+  const projectMessages = useMemo(() => {
+    if (!activeProject) return [];
+    const byId = new Map<string, ChatMessageItem>();
+    const legacy = workspace ? workspace.messages.filter((m) => m.projectId === activeProject.id) : [];
+    const live = liveChatByProject[activeProject.id] || [];
+    for (const m of legacy) byId.set(m.id, m);
+    for (const m of live) byId.set(m.id, m);
+    return Array.from(byId.values()).sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+  }, [workspace, activeProject, liveChatByProject]);
+
+  // Auto-scroll chat to bottom whenever new messages arrive live
+  useEffect(() => {
+    if (activeSection === 'assistant' && commMode === 'chat') {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [projectMessages.length, activeSection, commMode]);
 
   // Free Tier Quota Calculation
   const projectStorageBytes = useMemo(() => {
@@ -1047,19 +1149,32 @@ export default function App() {
     showToast(`Archivo "${newDoc.title}" creado y vinculado a ${chosen.label}.`);
   };
 
-  // Primary Personal Account Sign-In with Google (Social-Network Style, Real-Time Cloud Sync)
+  // Primary Personal Account Sign-In with Google (Social-Network Style, Instant Transition, Zero Refresh)
   const handleGoogleAccountSignIn = async () => {
     setIsGoogleLoggingIn(true);
     setAuthError('');
     try {
-      await signInWithGoogleAccount();
-      // initAuth listener immediately loads or prompts for @username profile
+      const { user } = await signInWithGoogleAccount();
+      // Immediately hydrate profile & transition to workspace OR first-time @username setup
+      await hydrateGoogleSession(user, null);
     } catch (err: any) {
       const code = String(err?.code || '');
       if (code.includes('popup-closed-by-user') || code.includes('cancelled-popup-request')) {
-        setAuthError('Has cerrado la ventana de Google antes de terminar.');
+        setAuthError('Has cerrado la ventana de Google antes de completar el inicio de sesión.');
+      } else if (code.includes('popup-blocked')) {
+        setAuthError(
+          'Tu navegador ha bloqueado la ventana de Google. Permite las ventanas emergentes e inténtalo de nuevo.'
+        );
+      } else if (code.includes('unauthorized-domain')) {
+        setAuthError(
+          'Este dominio todavía no está autorizado en Firebase Auth. Añádelo en Authentication > Settings > Authorized domains.'
+        );
+      } else if (code.includes('network-request-failed')) {
+        setAuthError('Error de red al conectar con Google. Comprueba tu conexión a internet.');
       } else {
-        setAuthError('No se pudo iniciar sesión con Google. Comprueba que las ventanas emergentes estén permitidas.');
+        setAuthError(
+          'No se pudo iniciar sesión con Google. Inténtalo de nuevo o comprueba los permisos del navegador.'
+        );
       }
     } finally {
       setIsGoogleLoggingIn(false);
@@ -1427,6 +1542,60 @@ export default function App() {
     }
     setSelectedInviteUsers([]);
     setShowProjectModal(false);
+  };
+
+  const handleRemoveProjectMember = (project: ProjectItem, targetUsername: string) => {
+    if (!workspace || !isProjectOwner(project)) return;
+    const targetLower = targetUsername.toLowerCase().trim();
+    if (targetLower === project.ownerUsername.toLowerCase().trim()) return;
+
+    setConfirmDialog({
+      isOpen: true,
+      title: `¿Expulsar a @${targetUsername} de «${project.name}»?`,
+      description:
+        'Perderá acceso de inmediato a las carpetas, archivos, tareas, avisos y chat en tiempo real de este proyecto.',
+      confirmLabel: 'Expulsar del proyecto',
+      isDanger: true,
+      onConfirm: async () => {
+        setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+        const matchedAccount = workspace.users.find(
+          (u) => u.username.toLowerCase().trim() === targetLower
+        );
+        const removed = await removeMemberFromProjectInFirestore(
+          project,
+          targetUsername,
+          matchedAccount?.firebaseUid
+        );
+        if (firebaseUid && !removed) {
+          showToast(`No se pudo expulsar a @${targetUsername} en la nube.`);
+          return;
+        }
+
+        const nextUsernames = project.authorizedUsernames.filter(
+          (u) =>
+            u.toLowerCase().trim() !== targetLower ||
+            u.toLowerCase().trim() === project.ownerUsername.toLowerCase().trim()
+        );
+        const nextMemberUids = (project.memberUids || []).filter(
+          (uid) =>
+            uid === project.ownerId ||
+            (matchedAccount?.firebaseUid ? uid !== matchedAccount.firebaseUid : true)
+        );
+        const updatedProj: ProjectItem = {
+          ...project,
+          authorizedUsernames: nextUsernames,
+          memberUids: nextMemberUids,
+          updatedAt: new Date().toISOString(),
+        };
+        const updatedWorkspace: WorkspaceData = {
+          ...workspace,
+          projects: workspace.projects.map((p) => (p.id === project.id ? updatedProj : p)),
+        };
+        setEditingProject((prev) => (prev?.id === project.id ? updatedProj : prev));
+        await saveWorkspace(updatedWorkspace, undefined, true);
+        showToast(`@${targetUsername} ha sido eliminado de «${project.name}» al instante.`);
+      },
+    });
   };
 
   const handleDeleteProject = (proj: ProjectItem) => {
@@ -2172,22 +2341,29 @@ export default function App() {
     if (!workspace || !activeProject || !chatInput.trim()) return;
 
     const nowIso = new Date().toISOString();
-    const msg = {
-      id: `msg_${Date.now()}`,
-      projectId: activeProject.id,
-      ownerId: currentUser?.id || 'usr_chiki',
-      senderUsername: currentUser?.username || 'chiki',
+    const pId = activeProject.id;
+    const msg: ChatMessageItem = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      projectId: pId,
+      ownerId: firebaseUid || currentUser?.id || 'usr_member',
+      senderUsername: currentUser?.username || 'estudiante',
       text: chatInput.trim(),
       createdAt: nowIso,
     };
 
-    const updatedWorkspace: WorkspaceData = {
-      ...workspace,
-      messages: [...workspace.messages, msg],
-    };
     setChatInput('');
-    await saveWorkspace(updatedWorkspace);
-    await syncMessageToFirestore(msg);
+    // 1. Optimistic local render (0ms latency)
+    setLiveChatByProject((prev) => ({
+      ...prev,
+      [pId]: [...(prev[pId] || []), msg],
+    }));
+
+    // 2. Atomic Firestore append to /projects/{pId}/state/chat (instant live delivery to all teammates)
+    const sent = await sendProjectChatMessageInFirestore(pId, msg);
+    if (firebaseUid && !sent) {
+      showToast('No se pudo enviar el mensaje en tiempo real. Comprueba tu conexión.');
+    }
+    syncMessageToFirestore(msg);
   };
 
   // Strictly Scoped Project AI Assistant Handler
@@ -3339,14 +3515,16 @@ export default function App() {
                             <UserPlus className="w-3.5 h-3.5" />
                             <span>Invitar Compañeros</span>
                           </button>
-                          <button
-                            type="button"
-                            onClick={openEditProjectModal}
-                            className="px-3 py-1.5 border border-[#2A2A35] bg-[#14141A] hover:border-white text-xs text-[#D4D4DC] inline-flex items-center gap-1.5 cursor-pointer transition-colors"
-                          >
-                            <KeyRound className="w-3.5 h-3.5 text-[#60A5FA]" />
-                            <span>Configurar</span>
-                          </button>
+                          {isProjectOwner(activeProject) && (
+                            <button
+                              type="button"
+                              onClick={openEditProjectModal}
+                              className="px-3 py-1.5 border border-[#2A2A35] bg-[#14141A] hover:border-white text-xs text-[#D4D4DC] inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                            >
+                              <KeyRound className="w-3.5 h-3.5 text-[#60A5FA]" />
+                              <span>Configurar</span>
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -3358,12 +3536,50 @@ export default function App() {
                       </p>
                     </div>
 
-                    <div className="pt-5 border-t border-[#22222A] flex flex-wrap items-center justify-between gap-4">
-                      <div className="text-xs text-[#8E8E9E]">
-                        <span>Miembros con acceso directo: </span>
-                        <strong className="text-white font-mono">
-                          {activeProject.authorizedUsernames.map((u) => `@${u}`).join(' · ')}
-                        </strong>
+                    <div className="pt-5 border-t border-[#22222A] space-y-4">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-[11px] uppercase text-[#8E8E9E]">
+                            EQUIPO DEL PROYECTO ({activeProject.authorizedUsernames.length})
+                          </span>
+                          {isProjectOwner(activeProject) &&
+                            activeProject.authorizedUsernames.length > 1 && (
+                              <span className="font-mono text-[10px] text-[#7E7E8E]">
+                                Como creador puedes expulsar miembros con ×
+                              </span>
+                            )}
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {activeProject.authorizedUsernames.map((uname) => {
+                            const isCreatorChip =
+                              uname.toLowerCase().trim() ===
+                              activeProject.ownerUsername.toLowerCase().trim();
+                            return (
+                              <span
+                                key={uname}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 border border-[#2A2A35] bg-[#14141A] font-mono text-xs text-white"
+                              >
+                                <span>@{uname}</span>
+                                {isCreatorChip && (
+                                  <span className="text-[9px] uppercase text-[#60A5FA]">
+                                    creador
+                                  </span>
+                                )}
+                                {isProjectOwner(activeProject) && !isCreatorChip && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveProjectMember(activeProject, uname)}
+                                    title={`Expulsar a @${uname} del proyecto`}
+                                    aria-label={`Expulsar a @${uname} del proyecto`}
+                                    className="ml-0.5 p-0.5 text-[#8E8E9E] hover:text-rose-400 transition-colors cursor-pointer"
+                                  >
+                                    <UserMinus className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </span>
+                            );
+                          })}
+                        </div>
                       </div>
 
                       <div className="flex flex-wrap gap-2">
@@ -4407,24 +4623,39 @@ export default function App() {
                     </>
                   ) : (
                     <>
-                      <div className="p-6 space-y-4 h-[440px] overflow-y-auto">
+                      <div className="px-6 py-3 border-b border-[#1D1D25] bg-[#0C0C10] flex items-center justify-between gap-2">
+                        <span className="font-mono text-[11px] uppercase text-[#A1A1B2]">
+                          CHAT DEL EQUIPO · {activeProject.name}
+                        </span>
+                        <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase text-emerald-400">
+                          <span className="w-1.5 h-1.5 bg-emerald-400 animate-pulse" />
+                          EN DIRECTO
+                        </span>
+                      </div>
+
+                      <div className="p-6 space-y-4 h-[410px] overflow-y-auto">
                         {projectMessages.length === 0 ? (
                           <p className="text-xs text-[#6E6E7E] text-center py-12">
-                            Todavía no hay mensajes en el chat del grupo.
+                            Todavía no hay mensajes en el chat del grupo. Escribe el primero y tus compañeros lo verán al instante.
                           </p>
                         ) : (
                           projectMessages.map((m) => {
-                            const isMe = m.senderUsername === currentUser.username;
+                            const isMe =
+                              m.senderUsername.toLowerCase() === currentUser.username.toLowerCase();
+                            const timeStr = new Date(m.createdAt).toLocaleTimeString('es-ES', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            });
                             return (
                               <div
                                 key={m.id}
                                 className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
                               >
                                 <span className="font-mono text-[11px] text-[#7E7E8E] mb-1">
-                                  @{m.senderUsername}
+                                  @{m.senderUsername} · {timeStr}
                                 </span>
                                 <div
-                                  className={`max-w-lg px-4 py-2.5 text-xs sm:text-sm border ${
+                                  className={`max-w-lg px-4 py-2.5 text-xs sm:text-sm border break-words ${
                                     isMe
                                       ? 'bg-white text-[#09090B] border-white font-medium'
                                       : 'bg-[#121218] text-[#E4E4EC] border-[#262632]'
@@ -4436,6 +4667,7 @@ export default function App() {
                             );
                           })
                         )}
+                        <div ref={chatEndRef} />
                       </div>
 
                       <form
@@ -5204,6 +5436,7 @@ export default function App() {
               <UserInvitePicker
                 allUsers={workspace?.users || []}
                 currentUsername={currentUser.username}
+                ownerUsername={editingProject ? editingProject.ownerUsername : currentUser.username}
                 existingMemberUsernames={
                   editingProject ? editingProject.authorizedUsernames : [currentUser.username]
                 }
@@ -5217,6 +5450,12 @@ export default function App() {
                     : []
                 }
                 selectedUsers={selectedInviteUsers}
+                canKickMembers={editingProject ? isProjectOwner(editingProject) : false}
+                onKickMember={(uname) => {
+                  if (editingProject) {
+                    handleRemoveProjectMember(editingProject, uname);
+                  }
+                }}
                 onAddUser={(u) =>
                   setSelectedInviteUsers((prev) =>
                     prev.some((x) => x.username.toLowerCase() === u.username.toLowerCase())
