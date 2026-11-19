@@ -1787,10 +1787,19 @@ export default function App() {
         }),
       });
 
-      const data = await res.json();
-      const replyText = res.ok
-        ? data.answer
-        : data.error || 'No se pudo obtener respuesta de la IA.';
+      const rawText = await res.text();
+      let data: { answer?: string; error?: string } = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = {};
+      }
+
+      const replyText =
+        res.ok && data.answer
+          ? data.answer
+          : data.error ||
+            `No se pudo obtener respuesta de la IA (HTTP ${res.status}). Verifica que GEMINI_API_KEY esté configurada en Vercel ➔ Settings ➔ Environment Variables y que hayas hecho Redeploy.`;
 
       setAiMessages((prev) => [
         ...prev,
@@ -1804,13 +1813,14 @@ export default function App() {
           }),
         },
       ]);
-    } catch {
+    } catch (err) {
+      const detail = err instanceof Error && err.message ? ` (${err.message})` : '';
       setAiMessages((prev) => [
         ...prev,
         {
           id: `ai_err_${Date.now()}`,
           role: 'assistant',
-          text: 'Error de red al conectar con la IA del proyecto.',
+          text: `Error de conexión con la IA del proyecto${detail}. Comprueba tu conexión o revisa GEMINI_API_KEY en Vercel.`,
           timestamp: 'Ahora',
         },
       ]);
@@ -2849,64 +2859,79 @@ export default function App() {
                ===================================================================================== */}
             {activeSection === 'files' && activeProject && (
               <div className="space-y-8">
-                {/* Top Header & Action Bar */}
-                <div className="border border-[#22222A] bg-[#0E0E12] p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
-                  <div>
-                    <span className="font-mono text-xs text-[#60A5FA] uppercase block mb-1">
-                      02 · EXPLORADOR DE PROYECTO · CUOTA {formatBytes(projectStorageBytes)} / 50 MB
-                    </span>
-                    <h2 className="font-display text-2xl font-bold text-white">
-                      Archivos y Carpetas de «{activeProject.name}»
-                    </h2>
-                    <p className="text-xs sm:text-sm text-[#8E8E9E] mt-1">
-                      Los archivos del paquete Office (<code className="text-white">.DOCX</code>,{' '}
-                      <code className="text-white">.XLSX</code>,{' '}
-                      <code className="text-white">.PPTX</code>,{' '}
-                      <code className="text-white">.ODS</code>,{' '}
-                      <code className="text-white">.CSV</code>) se abren directo en Google Docs /
-                      Sheets / Slides. Cualquier carpeta o archivo se puede extraer.
-                    </p>
+                {/* Top Header & Action Bar — 2-row architectural Bento layout so title never squeezes */}
+                <div className="border border-[#22222A] bg-[#0E0E12] p-5 sm:p-6 space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                    <div className="min-w-0 max-w-3xl">
+                      <span className="font-mono text-[11px] text-[#60A5FA] uppercase tracking-wider block mb-1.5">
+                        02 · EXPLORADOR DE PROYECTO
+                      </span>
+                      <h2 className="font-display text-xl sm:text-2xl font-bold text-white leading-tight break-words">
+                        Archivos y Carpetas de «{activeProject.name}»
+                      </h2>
+                      <p className="text-xs sm:text-sm text-[#8E8E9E] mt-2 leading-relaxed">
+                        Los archivos del paquete Office (<code className="text-white">.DOCX</code>,{' '}
+                        <code className="text-white">.XLSX</code>,{' '}
+                        <code className="text-white">.PPTX</code>,{' '}
+                        <code className="text-white">.ODS</code>,{' '}
+                        <code className="text-white">.CSV</code>) se abren directo en Google Docs /
+                        Sheets / Slides. También puedes enlazar documentos creados en Google o extraer
+                        cualquier carpeta en <code className="text-white">.ZIP</code>.
+                      </p>
+                    </div>
+
+                    <div className="border border-[#22222A] bg-[#121218] px-3.5 py-2 shrink-0 self-start">
+                      <span className="font-mono text-[10px] text-[#7E7E8E] uppercase block">
+                        CUOTA DEL PROYECTO
+                      </span>
+                      <span className="font-mono text-xs font-semibold text-white">
+                        {formatBytes(projectStorageBytes)}{' '}
+                        <span className="text-[#7E7E8E]">/ 50 MB</span>
+                      </span>
+                    </div>
                   </div>
 
-                  {/* Rectangular Action Buttons */}
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={openCreateGoogleFileModal}
-                      className="h-10 px-4 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <FilePlus2 className="w-4 h-4" />
-                      <span>Crear Archivo (Google)</span>
-                    </button>
+                  {/* Dedicated Rectangular Action Toolbar */}
+                  <div className="pt-4 border-t border-[#1D1D25] flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={openCreateGoogleFileModal}
+                        className="h-10 px-4 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap cursor-pointer transition-colors"
+                      >
+                        <FilePlus2 className="w-4 h-4 shrink-0" />
+                        <span>Crear Archivo (Google)</span>
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => handleTriggerUpload('files')}
-                      disabled={isSyncingDrive}
-                      className="h-10 px-4 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-white font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <Upload className="w-4 h-4 text-[#60A5FA]" />
-                      <span>Subir Archivos</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => handleTriggerUpload('files')}
+                        disabled={isSyncingDrive}
+                        className="h-10 px-4 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-white font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap cursor-pointer transition-colors"
+                      >
+                        <Upload className="w-4 h-4 text-[#60A5FA] shrink-0" />
+                        <span>Subir Archivos</span>
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => handleTriggerUpload('folder')}
-                      disabled={isSyncingDrive}
-                      className="h-10 px-4 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-white font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <FolderUp className="w-4 h-4 text-[#60A5FA]" />
-                      <span>Subir Carpeta</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => handleTriggerUpload('folder')}
+                        disabled={isSyncingDrive}
+                        className="h-10 px-4 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-white font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap cursor-pointer transition-colors"
+                      >
+                        <FolderUp className="w-4 h-4 text-[#60A5FA] shrink-0" />
+                        <span>Subir Carpeta</span>
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setShowFolderModal(true)}
-                      className="h-10 px-4 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-[#D4D4DC] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <FolderPlus className="w-4 h-4 text-emerald-400" />
-                      <span>Nueva Carpeta</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowFolderModal(true)}
+                        className="h-10 px-4 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-[#D4D4DC] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap cursor-pointer transition-colors"
+                      >
+                        <FolderPlus className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <span>Nueva Carpeta</span>
+                      </button>
+                    </div>
 
                     <button
                       type="button"
@@ -2917,9 +2942,9 @@ export default function App() {
                           activeProject.name;
                         handleExtractFolderAsZip(currentFolderId, currentLabel);
                       }}
-                      className="h-10 px-4 border border-[#3B82F6] bg-[#3B82F6]/15 hover:bg-[#3B82F6]/25 text-[#60A5FA] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
+                      className="h-10 px-4 border border-[#3B82F6] bg-[#3B82F6]/15 hover:bg-[#3B82F6]/25 text-[#60A5FA] font-semibold text-xs uppercase tracking-wider inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer transition-colors self-start xl:self-auto"
                     >
-                      <Download className="w-4 h-4" />
+                      <Download className="w-4 h-4 shrink-0" />
                       <span>
                         {isExtractingZip ? 'Comprimiendo...' : 'Extraer Carpeta Actual (.ZIP)'}
                       </span>

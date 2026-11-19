@@ -225,9 +225,9 @@ REGLA ESTRICTA E INQUEBRANTABLE DE ALCANCE:
       : question;
 
     const candidateModels = [
-      { name: 'gemini-3.1-flash-lite', useLowThinking: false },
       { name: 'gemini-4-hydrogen', useLowThinking: true },
       { name: 'gemini-3.1-flash-lite', useLowThinking: false },
+      { name: 'gemini-2.5-flash', useLowThinking: false },
     ];
 
     let answer = '';
