@@ -39,17 +39,22 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 
-// Required Google Workspace OAuth scopes
+// Required Google Workspace OAuth scopes (only requested when connecting Drive)
 export const SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/documents',
 ];
 
-const provider = new GoogleAuthProvider();
-SCOPES.forEach((scope) => provider.addScope(scope));
-provider.setCustomParameters({ prompt: 'consent' });
+// 1) Clean Google Sign-In provider (basic profile/email only — instant personal account login)
+const accountProvider = new GoogleAuthProvider();
+accountProvider.setCustomParameters({ prompt: 'select_account' });
 
-// In-memory access token cache (never stored in localStorage/sessionStorage)
+// 2) Google Drive Workspace provider (only requested when user explicitly links Drive API)
+const driveProvider = new GoogleAuthProvider();
+SCOPES.forEach((scope) => driveProvider.addScope(scope));
+driveProvider.setCustomParameters({ prompt: 'consent' });
+
+// In-memory Drive access token cache (never stored in localStorage/sessionStorage)
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
 
@@ -120,6 +125,14 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
+function logFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  try {
+    handleFirestoreError(error, operationType, path);
+  } catch {
+    // Already logged structured FirestoreErrorInfo
+  }
+}
+
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string | null) => void,
   onAuthFailure?: () => void
@@ -138,10 +151,25 @@ export const initAuth = (
   });
 };
 
+// Primary Social-Network Account Sign-In with Google (NO Drive scopes, instant 1-click)
+export const signInWithGoogleAccount = async (): Promise<{ user: User }> => {
+  try {
+    isSigningIn = true;
+    const result = await signInWithPopup(auth, accountProvider);
+    return { user: result.user };
+  } catch (error) {
+    console.error('Google account sign in error:', error);
+    throw error;
+  } finally {
+    isSigningIn = false;
+  }
+};
+
+// Optional Google Drive OAuth connection (requests drive.file + documents scopes)
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
   try {
     isSigningIn = true;
-    const result = await signInWithPopup(auth, provider);
+    const result = await signInWithPopup(auth, driveProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
       throw new Error('Failed to get access token from Firebase Auth');
@@ -150,7 +178,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     cachedAccessToken = token;
     return { user: result.user, accessToken: token };
   } catch (error) {
-    console.error('Sign in error:', error);
+    console.error('Google Drive sign in error:', error);
     throw error;
   } finally {
     isSigningIn = false;
@@ -176,7 +204,7 @@ const toIsoString = (val: unknown): string => {
   return new Date().toISOString();
 };
 
-const cleanUsername = (raw: string): string => {
+export const cleanUsername = (raw: string): string => {
   const cleaned = raw
     .toLowerCase()
     .trim()
@@ -186,24 +214,56 @@ const cleanUsername = (raw: string): string => {
 
 // ==================== 1. USER PROFILE DIRECTORY (NO PII) ====================
 
-export async function syncUserProfileToFirestore(account: StudentAccount) {
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+export async function getMyUserProfileFromFirestore(uid: string): Promise<StudentAccount | null> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !uid) return null;
+  const path = `users/${uid}`;
+  try {
+    const snap = await getDoc(doc(db, 'users', uid));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    return {
+      id: `fb_${snap.id}`,
+      firebaseUid: String(data.uid || snap.id),
+      username: String(data.username || 'usuario'),
+      displayName: String(data.displayName || data.username || 'Estudiante'),
+      passwordHash: '',
+      role: String(data.role || 'Estudiante de Informática'),
+      createdAt: toIsoString(data.createdAt),
+    };
+  } catch (error) {
+    logFirestoreError(error, OperationType.GET, path);
+    return null;
+  }
+}
+
+export async function syncUserProfileToFirestore(account: StudentAccount): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return false;
   const uid = auth.currentUser.uid;
+  const path = `users/${uid}`;
   const userRef = doc(db, 'users', uid);
+  const payloadBase = {
+    username: cleanUsername(account.username),
+    displayName: (account.displayName || account.username || 'Estudiante').slice(0, 80),
+    role: (account.role || 'Estudiante de Informática').slice(0, 80),
+    searchable: true,
+    updatedAt: serverTimestamp(),
+  };
+
   try {
     const existingSnap = await getDoc(userRef);
-    const existingData = existingSnap.exists() ? existingSnap.data() : null;
-    await setDoc(userRef, {
-      uid,
-      username: cleanUsername(account.username),
-      displayName: (account.displayName || account.username || 'Estudiante').slice(0, 80),
-      role: (account.role || 'Estudiante de Informática').slice(0, 80),
-      searchable: true,
-      createdAt: existingData?.createdAt || serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    if (existingSnap.exists()) {
+      await updateDoc(userRef, payloadBase);
+    } else {
+      await setDoc(userRef, {
+        uid,
+        ...payloadBase,
+        createdAt: serverTimestamp(),
+      });
+    }
+    return true;
   } catch (error) {
-    console.warn('Firestore user profile sync skipped:', error);
+    logFirestoreError(error, OperationType.WRITE, path);
+    return false;
   }
 }
 
@@ -230,73 +290,129 @@ export function subscribeToDirectoryUsers(
       onUsers(list);
     },
     (error) => {
-      console.warn('Firestore users subscription error:', error);
+      logFirestoreError(error, OperationType.LIST, 'users');
     }
   );
 }
 
 // ==================== 2. PROJECTS & EXPLORAR PROYECTOS ====================
 
-export async function syncProjectToFirestore(project: ProjectItem, _isNew?: boolean) {
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+const mapProjectDoc = (d: any): ProjectItem => {
+  const data = d.data();
+  return {
+    id: String(data.id || d.id),
+    name: String(data.name || 'Proyecto'),
+    subject: String(data.subject || 'Informática'),
+    description: String(data.description || ''),
+    ownerId: String(data.ownerId || ''),
+    ownerUsername: String(data.ownerUsername || 'usuario'),
+    hasPassword: Boolean(data.hasPassword),
+    passwordHash: String(data.passwordHash || ''),
+    visibility: data.visibility === 'private' ? 'private' : 'class',
+    authorizedUsernames: Array.isArray(data.authorizedUsernames)
+      ? data.authorizedUsernames.map(String)
+      : [String(data.ownerUsername || 'usuario')],
+    memberUids: Array.isArray(data.memberUids)
+      ? data.memberUids.map(String)
+      : [String(data.ownerId || '')].filter(Boolean),
+    dueDate: String(data.dueDate || new Date().toISOString()),
+    driveFolderId: String(data.driveFolderId || ''),
+    createdAt: toIsoString(data.createdAt),
+    updatedAt: toIsoString(data.updatedAt),
+  };
+};
+
+export async function syncProjectToFirestore(
+  project: ProjectItem,
+  isNew = false
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return false;
   const uid = auth.currentUser.uid;
   const projectId = sanitizeId(project.id);
+  const path = `projects/${projectId}`;
   const projectRef = doc(db, 'projects', projectId);
+
+  const ownerUname = cleanUsername(project.ownerUsername || 'estudiante');
+  const incomingAuthUsers = Array.isArray(project.authorizedUsernames)
+    ? project.authorizedUsernames.map((u) => cleanUsername(u))
+    : [];
+  const mergedAuthUsers = Array.from(new Set([ownerUname, ...incomingAuthUsers])).slice(0, 50);
+
+  const incomingMemberUids = Array.isArray(project.memberUids)
+    ? project.memberUids.filter((x) => typeof x === 'string' && x.length > 0)
+    : [];
+  const mergedMemberUids = Array.from(
+    new Set([project.ownerId && !project.ownerId.startsWith('usr_') ? project.ownerId : uid, uid, ...incomingMemberUids])
+  ).slice(0, 50);
+
+  const updateFields = {
+    name: (project.name || 'Proyecto').slice(0, 120),
+    subject: (project.subject || 'Informática').slice(0, 80),
+    description: (project.description || '').slice(0, 1000),
+    hasPassword: Boolean(project.hasPassword),
+    passwordHash: (project.passwordHash || '').slice(0, 128),
+    visibility: project.visibility === 'private' ? 'private' : 'class',
+    authorizedUsernames: mergedAuthUsers,
+    memberUids: mergedMemberUids,
+    dueDate: (project.dueDate || '').slice(0, 40),
+    driveFolderId: (project.driveFolderId || '').slice(0, 128),
+    updatedAt: serverTimestamp(),
+  };
+
+  if (isNew) {
+    try {
+      await setDoc(projectRef, {
+        id: projectId,
+        ownerId: uid,
+        ownerUsername: ownerUname,
+        ...updateFields,
+        createdAt: serverTimestamp(),
+      });
+      return true;
+    } catch (error) {
+      logFirestoreError(error, OperationType.CREATE, path);
+      return false;
+    }
+  }
+
+  // Existing project update — try updateDoc first (avoids getDoc on missing doc); if not-found, create it
   try {
-    const existingSnap = await getDoc(projectRef);
-    const existingData = existingSnap.exists() ? existingSnap.data() : null;
-
-    const existingMemberUids: string[] = Array.isArray(existingData?.memberUids)
-      ? existingData.memberUids.filter((x: unknown) => typeof x === 'string')
-      : [];
-    const incomingMemberUids: string[] = Array.isArray(project.memberUids)
-      ? project.memberUids.filter((x) => typeof x === 'string' && x.length > 0)
-      : [];
-    const mergedMemberUids = Array.from(
-      new Set([existingData?.ownerId || uid, uid, ...existingMemberUids, ...incomingMemberUids])
-    ).slice(0, 50);
-
-    const existingAuthUsers: string[] = Array.isArray(existingData?.authorizedUsernames)
-      ? existingData.authorizedUsernames.filter((x: unknown) => typeof x === 'string')
-      : [];
-    const incomingAuthUsers: string[] = Array.isArray(project.authorizedUsernames)
-      ? project.authorizedUsernames.map((u) => cleanUsername(u))
-      : [];
-    const ownerUname = cleanUsername(existingData?.ownerUsername || project.ownerUsername || 'chiki');
-    const mergedAuthUsers = Array.from(
-      new Set([ownerUname, ...existingAuthUsers, ...incomingAuthUsers])
-    ).slice(0, 50);
-
-    await setDoc(projectRef, {
-      id: projectId,
-      name: (project.name || 'Proyecto').slice(0, 120),
-      subject: (project.subject || 'Informática').slice(0, 80),
-      description: (project.description || '').slice(0, 1000),
-      ownerId: existingData?.ownerId || uid,
-      ownerUsername: ownerUname,
-      hasPassword: Boolean(project.hasPassword),
-      passwordHash: (project.passwordHash || '').slice(0, 128),
-      visibility: project.visibility === 'private' ? 'private' : 'class',
-      authorizedUsernames: mergedAuthUsers,
-      memberUids: mergedMemberUids,
-      dueDate: (project.dueDate || '').slice(0, 40),
-      driveFolderId: (project.driveFolderId || '').slice(0, 128),
-      createdAt: existingData?.createdAt || serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-  } catch (error) {
-    console.warn('Firestore project sync skipped:', error);
+    await updateDoc(projectRef, updateFields);
+    return true;
+  } catch (updateErr: any) {
+    const msg = String(updateErr?.code || updateErr?.message || '');
+    if (msg.includes('not-found') || msg.includes('No document to update')) {
+      try {
+        await setDoc(projectRef, {
+          id: projectId,
+          ownerId: uid,
+          ownerUsername: ownerUname,
+          ...updateFields,
+          createdAt: serverTimestamp(),
+        });
+        return true;
+      } catch (createErr) {
+        logFirestoreError(createErr, OperationType.CREATE, path);
+        return false;
+      }
+    }
+    logFirestoreError(updateErr, OperationType.UPDATE, path);
+    return false;
   }
 }
 
-export async function joinProjectInFirestore(project: ProjectItem, joiningUsername: string) {
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+export async function joinProjectInFirestore(
+  project: ProjectItem,
+  joiningUsername: string
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return false;
   const uid = auth.currentUser.uid;
   const projectId = sanitizeId(project.id);
+  const path = `projects/${projectId}`;
   const projectRef = doc(db, 'projects', projectId);
   try {
     const snap = await getDoc(projectRef);
-    if (!snap.exists()) return;
+    if (!snap.exists()) return false;
     const data = snap.data();
     const currentUids: string[] = Array.isArray(data.memberUids) ? data.memberUids : [data.ownerId];
     const currentUsernames: string[] = Array.isArray(data.authorizedUsernames)
@@ -313,60 +429,68 @@ export async function joinProjectInFirestore(project: ProjectItem, joiningUserna
       authorizedUsernames: updatedUsernames,
       updatedAt: serverTimestamp(),
     });
+    return true;
   } catch (error) {
-    console.warn('Firestore project join skipped:', error);
+    logFirestoreError(error, OperationType.UPDATE, path);
+    return false;
   }
 }
 
-export async function deleteProjectFromFirestore(projectId: string) {
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+export async function deleteProjectFromFirestore(projectId: string): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return false;
   const pId = sanitizeId(projectId);
   try {
     await deleteDoc(doc(db, 'projects', pId, 'state', 'main')).catch(() => {});
     await deleteDoc(doc(db, 'projects', pId));
+    return true;
   } catch (error) {
-    console.warn('Firestore project delete skipped:', error);
+    logFirestoreError(error, OperationType.DELETE, `projects/${pId}`);
+    return false;
   }
 }
 
 export function subscribeToClassProjects(
+  uid: string,
   onProjects: (projects: ProjectItem[]) => void
 ): () => void {
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return () => {};
-  const q = query(collection(db, 'projects'), where('visibility', '==', 'class'));
-  return onSnapshot(
-    q,
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !uid) return () => {};
+  const classMap = new Map<string, ProjectItem>();
+  const memberMap = new Map<string, ProjectItem>();
+
+  const emitCombined = () => {
+    const combined = new Map<string, ProjectItem>();
+    classMap.forEach((v, k) => combined.set(k, v));
+    memberMap.forEach((v, k) => combined.set(k, v));
+    const list = Array.from(combined.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    onProjects(list);
+  };
+
+  const unsubClass = onSnapshot(
+    query(collection(db, 'projects'), where('visibility', '==', 'class')),
     (snap) => {
-      const list: ProjectItem[] = snap.docs.map((d) => {
-        const data = d.data();
-        return {
-          id: String(data.id || d.id),
-          name: String(data.name || 'Proyecto'),
-          subject: String(data.subject || 'Informática'),
-          description: String(data.description || ''),
-          ownerId: String(data.ownerId || ''),
-          ownerUsername: String(data.ownerUsername || 'usuario'),
-          hasPassword: Boolean(data.hasPassword),
-          passwordHash: String(data.passwordHash || ''),
-          visibility: data.visibility === 'private' ? 'private' : 'class',
-          authorizedUsernames: Array.isArray(data.authorizedUsernames)
-            ? data.authorizedUsernames.map(String)
-            : [String(data.ownerUsername || 'usuario')],
-          memberUids: Array.isArray(data.memberUids)
-            ? data.memberUids.map(String)
-            : [String(data.ownerId || '')].filter(Boolean),
-          dueDate: String(data.dueDate || new Date().toISOString()),
-          driveFolderId: String(data.driveFolderId || ''),
-          createdAt: toIsoString(data.createdAt),
-          updatedAt: toIsoString(data.updatedAt),
-        };
-      });
-      onProjects(list);
+      classMap.clear();
+      snap.docs.forEach((d) => classMap.set(d.id, mapProjectDoc(d)));
+      emitCombined();
     },
-    (error) => {
-      console.warn('Firestore projects subscription error:', error);
-    }
+    (error) => logFirestoreError(error, OperationType.LIST, 'projects(class)')
   );
+
+  const unsubMember = onSnapshot(
+    query(collection(db, 'projects'), where('memberUids', 'array-contains', uid)),
+    (snap) => {
+      memberMap.clear();
+      snap.docs.forEach((d) => memberMap.set(d.id, mapProjectDoc(d)));
+      emitCombined();
+    },
+    (error) => logFirestoreError(error, OperationType.LIST, 'projects(member)')
+  );
+
+  return () => {
+    unsubClass();
+    unsubMember();
+  };
 }
 
 // ==================== 3. SHARED PROJECT WORKSPACE STATE ====================
@@ -382,10 +506,11 @@ export interface ProjectStateSnapshot {
 export async function syncProjectWorkspaceStateToFirestore(
   projectId: string,
   state: ProjectStateSnapshot
-) {
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !projectId) return false;
   const uid = auth.currentUser.uid;
   const pId = sanitizeId(projectId);
+  const path = `projects/${pId}/state/main`;
   const stateRef = doc(db, 'projects', pId, 'state', 'main');
 
   // Keep Firestore document well below 1MB by omitting large raw base64 blobs
@@ -407,8 +532,10 @@ export async function syncProjectWorkspaceStateToFirestore(
       messages: state.messages.slice(-300),
       updatedAt: serverTimestamp(),
     });
+    return true;
   } catch (error) {
-    console.warn('Firestore workspace state sync skipped:', error);
+    logFirestoreError(error, OperationType.WRITE, path);
+    return false;
   }
 }
 
@@ -418,6 +545,7 @@ export function subscribeToProjectWorkspaceState(
 ): () => void {
   if (!auth.currentUser || !auth.currentUser.emailVerified || !projectId) return () => {};
   const pId = sanitizeId(projectId);
+  const path = `projects/${pId}/state/main`;
   const stateRef = doc(db, 'projects', pId, 'state', 'main');
   return onSnapshot(
     stateRef,
@@ -433,17 +561,20 @@ export function subscribeToProjectWorkspaceState(
       });
     },
     (error) => {
-      console.warn('Firestore project state subscription skipped:', error);
+      logFirestoreError(error, OperationType.GET, path);
     }
   );
 }
 
 // ==================== 4. REAL-TIME PROJECT INVITATIONS ====================
 
-export async function createProjectInvitationInFirestore(invitation: ProjectInvitation) {
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+export async function createProjectInvitationInFirestore(
+  invitation: ProjectInvitation
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return false;
   const uid = auth.currentUser.uid;
   const invId = sanitizeId(invitation.id);
+  const path = `invitations/${invId}`;
   const invRef = doc(db, 'invitations', invId);
   try {
     await setDoc(invRef, {
@@ -459,27 +590,30 @@ export async function createProjectInvitationInFirestore(invitation: ProjectInvi
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+    return true;
   } catch (error) {
-    console.warn('Firestore invitation creation skipped:', error);
+    logFirestoreError(error, OperationType.CREATE, path);
+    return false;
   }
 }
 
 export async function respondToInvitationInFirestore(
   invitationId: string,
   status: 'accepted' | 'declined'
-) {
-  if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return false;
   const invId = sanitizeId(invitationId);
+  const path = `invitations/${invId}`;
   const invRef = doc(db, 'invitations', invId);
   try {
-    const snap = await getDoc(invRef);
-    if (!snap.exists()) return;
     await updateDoc(invRef, {
       status,
       updatedAt: serverTimestamp(),
     });
+    return true;
   } catch (error) {
-    console.warn('Firestore invitation response skipped:', error);
+    logFirestoreError(error, OperationType.UPDATE, path);
+    return false;
   }
 }
 
@@ -527,7 +661,7 @@ export function subscribeToUserInvitations(
       snap.docs.forEach((d) => incomingMap.set(d.id, mapDoc(d)));
       emitMerged();
     },
-    (error) => console.warn('Incoming invitations listener warning:', error)
+    (error) => logFirestoreError(error, OperationType.LIST, 'invitations(incoming)')
   );
 
   const unsubOut = onSnapshot(
@@ -537,7 +671,7 @@ export function subscribeToUserInvitations(
       snap.docs.forEach((d) => outgoingMap.set(d.id, mapDoc(d)));
       emitMerged();
     },
-    (error) => console.warn('Outgoing invitations listener warning:', error)
+    (error) => logFirestoreError(error, OperationType.LIST, 'invitations(outgoing)')
   );
 
   return () => {
@@ -555,8 +689,6 @@ export async function syncFolderToFirestore(folder: FolderItem) {
   const folderId = sanitizeId(folder.id);
   const folderRef = doc(db, 'projects', projectId, 'folders', folderId);
   try {
-    const existingSnap = await getDoc(folderRef);
-    if (existingSnap.exists()) return;
     await setDoc(folderRef, {
       id: folderId,
       projectId,
@@ -564,11 +696,11 @@ export async function syncFolderToFirestore(folder: FolderItem) {
       parentId: sanitizeId(folder.parentId || 'root'),
       name: (folder.name || 'Carpeta').slice(0, 100),
       driveFolderId: (folder.driveFolderId || '').slice(0, 128),
-      createdBy: cleanUsername(folder.createdBy || 'chiki'),
+      createdBy: cleanUsername(folder.createdBy || 'estudiante'),
       createdAt: serverTimestamp(),
     });
-  } catch (error) {
-    console.warn('Firestore folder sync skipped:', error);
+  } catch {
+    // Primary sync is handled via state/main
   }
 }
 
@@ -579,26 +711,23 @@ export async function syncDocumentToFirestore(docItem: DocumentItem) {
   const documentId = sanitizeId(docItem.id);
   const docRef = doc(db, 'projects', projectId, 'documents', documentId);
   try {
-    const existingSnap = await getDoc(docRef);
-    const existingData = existingSnap.exists() ? existingSnap.data() : null;
-
     await setDoc(docRef, {
       id: documentId,
       projectId,
-      ownerId: existingData?.ownerId || uid,
+      ownerId: uid,
       folderId: sanitizeId(docItem.folderId || 'root'),
       title: (docItem.title || 'Archivo').slice(0, 150),
       content: (docItem.content || '').slice(0, 50000),
       googleDocId: (docItem.googleDocId || '').slice(0, 128),
       googleDocUrl: (docItem.googleDocUrl || '').slice(0, 500),
-      assigneeUsername: (docItem.assigneeUsername || 'chiki').slice(0, 40),
+      assigneeUsername: (docItem.assigneeUsername || 'estudiante').slice(0, 40),
       status: docItem.status || 'draft',
-      lastModifiedBy: (docItem.lastModifiedBy || 'chiki').slice(0, 40),
-      createdAt: existingData?.createdAt || serverTimestamp(),
+      lastModifiedBy: (docItem.lastModifiedBy || 'estudiante').slice(0, 40),
+      createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
-  } catch (error) {
-    console.warn('Firestore document sync skipped:', error);
+  } catch {
+    // Primary sync is handled via state/main
   }
 }
 
@@ -609,23 +738,20 @@ export async function syncTaskToFirestore(task: TaskItem) {
   const taskId = sanitizeId(task.id);
   const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
   try {
-    const existingSnap = await getDoc(taskRef);
-    const existingData = existingSnap.exists() ? existingSnap.data() : null;
-
     await setDoc(taskRef, {
       id: taskId,
       projectId,
-      ownerId: existingData?.ownerId || uid,
+      ownerId: uid,
       title: (task.title || 'Tarea').slice(0, 200),
       description: (task.description || '').slice(0, 1000),
-      assigneeUsername: (task.assigneeUsername || 'chiki').slice(0, 40),
+      assigneeUsername: (task.assigneeUsername || 'estudiante').slice(0, 40),
       dueDate: (task.dueDate || '').slice(0, 40),
       status: task.status || 'pending',
-      createdAt: existingData?.createdAt || serverTimestamp(),
+      createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
-  } catch (error) {
-    console.warn('Firestore task sync skipped:', error);
+  } catch {
+    // Primary sync is handled via state/main
   }
 }
 
@@ -636,24 +762,21 @@ export async function syncNoticeToFirestore(notice: NoticeItem) {
   const noticeId = sanitizeId(notice.id);
   const noticeRef = doc(db, 'projects', projectId, 'notices', noticeId);
   try {
-    const existingSnap = await getDoc(noticeRef);
-    const existingData = existingSnap.exists() ? existingSnap.data() : null;
-
     await setDoc(noticeRef, {
       id: noticeId,
       projectId,
-      ownerId: existingData?.ownerId || uid,
+      ownerId: uid,
       title: (notice.title || 'Aviso').slice(0, 120),
       message: (notice.message || '').slice(0, 1000),
       priority: notice.priority || 'normal',
-      authorUsername: cleanUsername(existingData?.authorUsername || notice.authorUsername || 'chiki'),
-      targetUsername: cleanUsername(existingData?.targetUsername || notice.targetUsername || 'all'),
+      authorUsername: cleanUsername(notice.authorUsername || 'estudiante'),
+      targetUsername: cleanUsername(notice.targetUsername || 'all'),
       archived: Boolean(notice.archived),
-      createdAt: existingData?.createdAt || serverTimestamp(),
+      createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
-  } catch (error) {
-    console.warn('Firestore notice sync skipped:', error);
+  } catch {
+    // Primary sync is handled via state/main
   }
 }
 
@@ -664,23 +787,20 @@ export async function syncSnippetToFirestore(snippet: CodeSnippetItem) {
   const snippetId = sanitizeId(snippet.id);
   const snippetRef = doc(db, 'projects', projectId, 'snippets', snippetId);
   try {
-    const existingSnap = await getDoc(snippetRef);
-    const existingData = existingSnap.exists() ? existingSnap.data() : null;
-
     await setDoc(snippetRef, {
       id: snippetId,
       projectId,
-      ownerId: existingData?.ownerId || uid,
+      ownerId: uid,
       folderId: sanitizeId(snippet.folderId || 'root'),
       title: (snippet.title || 'Snippet').slice(0, 120),
       language: (snippet.language || 'bash').slice(0, 30),
       code: (snippet.code || '').slice(0, 20000),
-      authorUsername: cleanUsername(existingData?.authorUsername || snippet.authorUsername || 'chiki'),
-      createdAt: existingData?.createdAt || serverTimestamp(),
+      authorUsername: cleanUsername(snippet.authorUsername || 'estudiante'),
+      createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
-  } catch (error) {
-    console.warn('Firestore snippet sync skipped:', error);
+  } catch {
+    // Primary sync is handled via state/main
   }
 }
 
@@ -691,18 +811,16 @@ export async function syncMessageToFirestore(message: ChatMessageItem) {
   const messageId = sanitizeId(message.id);
   const msgRef = doc(db, 'projects', projectId, 'messages', messageId);
   try {
-    const existingSnap = await getDoc(msgRef);
-    if (existingSnap.exists()) return;
     await setDoc(msgRef, {
       id: messageId,
       projectId,
       ownerId: uid,
-      senderUsername: cleanUsername(message.senderUsername || 'chiki'),
+      senderUsername: cleanUsername(message.senderUsername || 'estudiante'),
       text: (message.text || '').slice(0, 1000),
       createdAt: serverTimestamp(),
     });
-  } catch (error) {
-    console.warn('Firestore message sync skipped:', error);
+  } catch {
+    // Primary sync is handled via state/main
   }
 }
 
@@ -716,7 +834,7 @@ export async function deleteFromFirestoreSubcollection(
   const iId = sanitizeId(itemId);
   try {
     await deleteDoc(doc(db, 'projects', pId, subcollectionName, iId));
-  } catch (error) {
-    console.warn('Firestore delete skipped:', error);
+  } catch {
+    // Primary sync is handled via state/main
   }
 }

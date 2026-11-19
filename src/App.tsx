@@ -44,6 +44,7 @@ import {
   Users,
   Check,
   Clock,
+  Zap,
 } from 'lucide-react';
 import {
   WorkspaceData,
@@ -63,8 +64,11 @@ import {
 import {
   auth,
   initAuth,
+  signInWithGoogleAccount,
   googleSignIn,
   logoutGoogle,
+  cleanUsername,
+  getMyUserProfileFromFirestore,
   syncUserProfileToFirestore,
   subscribeToDirectoryUsers,
   subscribeToClassProjects,
@@ -329,6 +333,9 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState<string>('');
   const [authRole, setAuthRole] = useState<string>('Estudiante de Informática');
   const [authError, setAuthError] = useState<string>('');
+  const [firebaseAuthChecked, setFirebaseAuthChecked] = useState<boolean>(false);
+  const [needsProfileSetup, setNeedsProfileSetup] = useState<boolean>(false);
+  const [isSavingProfile, setIsSavingProfile] = useState<boolean>(false);
 
   // Google Workspace OAuth & Firebase Auth State
   const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
@@ -338,6 +345,7 @@ export default function App() {
   const [syncBannerMessage, setSyncBannerMessage] = useState<string | null>(null);
   const [isSyncingDrive, setIsSyncingDrive] = useState<boolean>(false);
   const [isExtractingZip, setIsExtractingZip] = useState<boolean>(false);
+  const activeProjectIdRef = useRef<string>('');
   const [googlePromptModal, setGooglePromptModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -485,94 +493,67 @@ export default function App() {
     }
   }, [unlockedProjectIds]);
 
-  // Load workspace from localStorage first (NEVER wiped by stateless Vercel /api/workspace!)
+  // Load initial local cache quickly (real-time cloud sync takes over as soon as Google Auth resolves)
   useEffect(() => {
     const localData = getInitialLocalWorkspace();
-    const restoreSession = (ws: WorkspaceData) => {
-      const savedUsername = localStorage.getItem('chikihub_logged_user');
-      if (savedUsername) {
-        const foundUser =
-          ws.users.find((u) => u.username.toLowerCase() === savedUsername.toLowerCase()) || null;
-        if (foundUser) setCurrentUser(foundUser);
-      }
-      const savedProjId = localStorage.getItem(LOCAL_SELECTED_PROJECT_KEY);
-      if (savedProjId && ws.projects.some((p) => p.id === savedProjId)) {
-        setSelectedProjectId(savedProjId);
-      } else if (ws.projects.length > 0) {
-        setSelectedProjectId((prev) => prev || ws.projects[0].id);
-      }
-    };
-
-    // Hydrate immediately from local cache so refreshes never flash empty
     setWorkspace(localData);
-    restoreSession(localData);
-
-    fetch('/api/workspace')
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((rawServerData: Partial<WorkspaceData>) => {
-        const serverData = normalizeWorkspaceData(rawServerData);
-        // CRITICAL: Union-merge by ID so stateless Vercel empty arrays NEVER wipe localStorage!
-        const mergedWorkspace: WorkspaceData = {
-          users: mergeUsersByUsername(localData.users, serverData.users),
-          projects: mergeById(localData.projects, serverData.projects),
-          folders: mergeById(localData.folders, serverData.folders),
-          documents: mergeById(localData.documents, serverData.documents),
-          tasks: mergeById(localData.tasks, serverData.tasks),
-          notices: mergeById(localData.notices, serverData.notices),
-          snippets: mergeById(localData.snippets, serverData.snippets),
-          messages: mergeById(localData.messages, serverData.messages),
-          activities: mergeById(localData.activities, serverData.activities),
-          invitations: mergeById(localData.invitations, serverData.invitations),
-        };
-        setWorkspace(mergedWorkspace);
-        persistWorkspaceLocally(mergedWorkspace);
-        restoreSession(mergedWorkspace);
-      })
-      .catch(() => {
-        // Local cache already hydrated
-      })
-      .finally(() => setIsLoadingWorkspace(false));
+    const savedProjId = localStorage.getItem(LOCAL_SELECTED_PROJECT_KEY);
+    if (savedProjId) {
+      setSelectedProjectId(savedProjId);
+    }
+    setIsLoadingWorkspace(false);
   }, []);
 
-  // Initialize Firebase Google Auth listener
+  // Initialize Firebase Google Auth listener (individual personal accounts across ALL browsers & devices)
   useEffect(() => {
+    let active = true;
     const unsubscribe = initAuth(
-      (user, token) => {
+      async (user, token) => {
+        if (!active) return;
         setFirebaseUid(user.uid);
         setGoogleUserEmail(user.email || 'Conectado con Google');
         if (token) setGoogleAccessToken(token);
+
+        // Fetch this user's personal profile directly from Firestore /users/{uid}
+        const cloudProfile = await getMyUserProfileFromFirestore(user.uid);
+        if (!active) return;
+
+        if (cloudProfile) {
+          setCurrentUser(cloudProfile);
+          setNeedsProfileSetup(false);
+          localStorage.setItem('chikihub_logged_user', cloudProfile.username);
+        } else {
+          // First time signing in with this Google account: ask for personal @username & role
+          const emailPrefix = (user.email || 'estudiante').split('@')[0];
+          setAuthUsername(cleanUsername(emailPrefix));
+          setAuthDisplayName(user.displayName || emailPrefix);
+          setAuthRole('Estudiante de Informática');
+          setAuthError('');
+          setCurrentUser(null);
+          setNeedsProfileSetup(true);
+        }
+        setFirebaseAuthChecked(true);
       },
       () => {
+        if (!active) return;
         setFirebaseUid(null);
         setGoogleUserEmail(null);
         setGoogleAccessToken(null);
+        setCurrentUser(null);
+        setNeedsProfileSetup(false);
+        setLiveInviteToast(null);
+        setShowNotificationsPanel(false);
+        seenInviteIdsRef.current.clear();
+        setFirebaseAuthChecked(true);
       }
     );
-    return () => unsubscribe();
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
-  // Sync logged-in student profile to Firestore directory whenever Google is connected
-  useEffect(() => {
-    if (!firebaseUid || !currentUser) return;
-    const enrichedUser: StudentAccount = {
-      ...currentUser,
-      firebaseUid,
-    };
-    syncUserProfileToFirestore(enrichedUser);
-
-    // Ensure local user record stores firebaseUid so invitations map cleanly
-    setWorkspace((prev) => {
-      const updatedUsers = mergeUsersByUsername(prev.users, [enrichedUser]);
-      const next = { ...prev, users: updatedUsers };
-      persistWorkspaceLocally(next);
-      return next;
-    });
-  }, [firebaseUid, currentUser?.username]);
-
-  // Real-time Firestore subscriptions (Users directory, Class projects for Explorar, Invitations)
+  // Real-time Firestore subscriptions (Authoritative Cloud Source of Truth — instant sync across browsers)
   useEffect(() => {
     if (!firebaseUid) return;
 
@@ -580,18 +561,18 @@ export default function App() {
       setWorkspace((prev) => {
         const next: WorkspaceData = {
           ...prev,
-          users: mergeUsersByUsername(prev.users, cloudUsers),
+          users: cloudUsers,
         };
         persistWorkspaceLocally(next);
         return next;
       });
     });
 
-    const unsubProjects = subscribeToClassProjects((cloudProjects) => {
+    const unsubProjects = subscribeToClassProjects(firebaseUid, (cloudProjects) => {
       setWorkspace((prev) => {
         const next: WorkspaceData = {
           ...prev,
-          projects: mergeById(prev.projects, cloudProjects),
+          projects: cloudProjects,
         };
         persistWorkspaceLocally(next);
         return next;
@@ -602,7 +583,7 @@ export default function App() {
       setWorkspace((prev) => {
         const next: WorkspaceData = {
           ...prev,
-          invitations: mergeById(prev.invitations, cloudInvites),
+          invitations: cloudInvites,
         };
         persistWorkspaceLocally(next);
         return next;
@@ -616,62 +597,31 @@ export default function App() {
     };
   }, [firebaseUid]);
 
-  // Push any local projects created before Google sign-in up to Firestore once connected
-  useEffect(() => {
-    if (!firebaseUid || !currentUser) return;
-    const myLocalProjects = workspace.projects.filter(
-      (p) => p.ownerUsername.toLowerCase() === currentUser.username.toLowerCase()
-    );
-    myLocalProjects.forEach((proj) => {
-      const enriched: ProjectItem = {
-        ...proj,
-        ownerId: firebaseUid,
-        visibility: proj.visibility || 'class',
-        memberUids: Array.from(new Set([...(proj.memberUids || []), firebaseUid])),
-      };
-      syncProjectToFirestore(enriched, false).then(() => {
-        syncProjectWorkspaceStateToFirestore(proj.id, {
-          folders: workspace.folders.filter((f) => f.projectId === proj.id),
-          documents: workspace.documents.filter((d) => d.projectId === proj.id),
-          tasks: workspace.tasks.filter((t) => t.projectId === proj.id),
-          notices: workspace.notices.filter((n) => n.projectId === proj.id),
-          messages: workspace.messages.filter((m) => m.projectId === proj.id),
-        });
-      });
-    });
-    // Only trigger when firebaseUid connects for this user
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firebaseUid]);
-
-  // Persist workspace helper (LocalStorage + Firestore Project State + Dev Server)
+  // Persist workspace helper (LocalStorage + Instant Firestore Project State Sync)
   const saveWorkspace = useCallback(
-    async (updated: WorkspaceData, syncedProjectId?: string) => {
+    async (
+      updated: WorkspaceData,
+      syncedProjectId?: string,
+      skipCloudStateSync = false
+    ) => {
       const normalized = normalizeWorkspaceData(updated);
       setWorkspace(normalized);
       persistWorkspaceLocally(normalized);
 
-      const targetProjId = syncedProjectId || selectedProjectId;
-      if (auth.currentUser?.emailVerified && targetProjId) {
-        const targetProject = normalized.projects.find((p) => p.id === targetProjId);
-        if (targetProject) {
-          syncProjectWorkspaceStateToFirestore(targetProjId, {
-            folders: normalized.folders.filter((f) => f.projectId === targetProjId),
-            documents: normalized.documents.filter((d) => d.projectId === targetProjId),
-            tasks: normalized.tasks.filter((t) => t.projectId === targetProjId),
-            notices: normalized.notices.filter((n) => n.projectId === targetProjId),
-            messages: normalized.messages.filter((m) => m.projectId === targetProjId),
-          }).catch(() => {});
+      if (!skipCloudStateSync) {
+        const targetProjId = syncedProjectId || activeProjectIdRef.current || selectedProjectId;
+        if (auth.currentUser?.emailVerified && targetProjId) {
+          const targetProject = normalized.projects.find((p) => p.id === targetProjId);
+          if (targetProject) {
+            await syncProjectWorkspaceStateToFirestore(targetProjId, {
+              folders: normalized.folders.filter((f) => f.projectId === targetProjId),
+              documents: normalized.documents.filter((d) => d.projectId === targetProjId),
+              tasks: normalized.tasks.filter((t) => t.projectId === targetProjId),
+              notices: normalized.notices.filter((n) => n.projectId === targetProjId),
+              messages: normalized.messages.filter((m) => m.projectId === targetProjId),
+            });
+          }
         }
-      }
-
-      try {
-        await fetch('/api/workspace/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(normalized),
-        });
-      } catch {
-        // Already saved in localStorage and Firestore
       }
     },
     [selectedProjectId]
@@ -681,11 +631,12 @@ export default function App() {
   const isUserMemberOfProject = useCallback(
     (project: ProjectItem | null, user: StudentAccount | null): boolean => {
       if (!project || !user) return false;
+      if (firebaseUid && project.ownerId === firebaseUid) return true;
+      if (firebaseUid && project.memberUids?.includes(firebaseUid)) return true;
       if (unlockedProjectIds.includes(project.id)) return true;
       const uname = user.username.toLowerCase().trim();
       if (project.ownerUsername.toLowerCase().trim() === uname) return true;
       if (project.authorizedUsernames.some((u) => u.toLowerCase().trim() === uname)) return true;
-      if (firebaseUid && project.memberUids?.includes(firebaseUid)) return true;
       return false;
     },
     [unlockedProjectIds, firebaseUid]
@@ -714,49 +665,39 @@ export default function App() {
     return myProjects[0] || null;
   }, [workspace, selectedProjectId, myProjects, currentUser, isUserMemberOfProject]);
 
+  // Keep activeProjectIdRef always synchronized for instant Firestore writes
+  useEffect(() => {
+    activeProjectIdRef.current = activeProject?.id || '';
+  }, [activeProject?.id]);
+
   // Subscribe to real-time shared Firestore state of activeProject
+  // CRITICAL: Replace arrays authoritatively so DELETIONS by teammates vanish in milliseconds!
   useEffect(() => {
     if (!firebaseUid || !activeProject?.id) return;
     const pId = activeProject.id;
     const unsub = subscribeToProjectWorkspaceState(pId, (cloudState) => {
       setWorkspace((prev) => {
+        // Preserve large local binary dataUrls ONLY for documents that still exist in cloudState
+        const localBlobById = new Map<string, string>();
+        prev.documents
+          .filter((d) => d.projectId === pId && d.fileDataUrl)
+          .forEach((d) => localBlobById.set(d.id, d.fileDataUrl || ''));
+
+        const syncedDocs: DocumentItem[] = cloudState.documents.map((docItem) => {
+          const cachedBlob = localBlobById.get(docItem.id);
+          if (!docItem.fileDataUrl && cachedBlob) {
+            return { ...docItem, fileDataUrl: cachedBlob };
+          }
+          return docItem;
+        });
+
         const next: WorkspaceData = {
           ...prev,
-          folders: [
-            ...prev.folders.filter((f) => f.projectId !== pId),
-            ...mergeById(
-              prev.folders.filter((f) => f.projectId === pId),
-              cloudState.folders
-            ),
-          ],
-          documents: [
-            ...prev.documents.filter((d) => d.projectId !== pId),
-            ...mergeById(
-              prev.documents.filter((d) => d.projectId === pId),
-              cloudState.documents
-            ),
-          ],
-          tasks: [
-            ...prev.tasks.filter((t) => t.projectId !== pId),
-            ...mergeById(
-              prev.tasks.filter((t) => t.projectId === pId),
-              cloudState.tasks
-            ),
-          ],
-          notices: [
-            ...prev.notices.filter((n) => n.projectId !== pId),
-            ...mergeById(
-              prev.notices.filter((n) => n.projectId === pId),
-              cloudState.notices
-            ),
-          ],
-          messages: [
-            ...prev.messages.filter((m) => m.projectId !== pId),
-            ...mergeById(
-              prev.messages.filter((m) => m.projectId === pId),
-              cloudState.messages
-            ),
-          ],
+          folders: [...prev.folders.filter((f) => f.projectId !== pId), ...cloudState.folders],
+          documents: [...prev.documents.filter((d) => d.projectId !== pId), ...syncedDocs],
+          tasks: [...prev.tasks.filter((t) => t.projectId !== pId), ...cloudState.tasks],
+          notices: [...prev.notices.filter((n) => n.projectId !== pId), ...cloudState.notices],
+          messages: [...prev.messages.filter((m) => m.projectId !== pId), ...cloudState.messages],
         };
         persistWorkspaceLocally(next);
         return next;
@@ -1106,84 +1047,103 @@ export default function App() {
     showToast(`Archivo "${newDoc.title}" creado y vinculado a ${chosen.label}.`);
   };
 
-  // Student Account Login / Register Handler
-  const handleStudentAuthSubmit = async (e: React.FormEvent) => {
+  // Primary Personal Account Sign-In with Google (Social-Network Style, Real-Time Cloud Sync)
+  const handleGoogleAccountSignIn = async () => {
+    setIsGoogleLoggingIn(true);
+    setAuthError('');
+    try {
+      await signInWithGoogleAccount();
+      // initAuth listener immediately loads or prompts for @username profile
+    } catch (err: any) {
+      const code = String(err?.code || '');
+      if (code.includes('popup-closed-by-user') || code.includes('cancelled-popup-request')) {
+        setAuthError('Has cerrado la ventana de Google antes de terminar.');
+      } else {
+        setAuthError('No se pudo iniciar sesión con Google. Comprueba que las ventanas emergentes estén permitidas.');
+      }
+    } finally {
+      setIsGoogleLoggingIn(false);
+    }
+  };
+
+  // First-Time Profile Completion (Saves unique @username + DisplayName + Role into Firestore /users/{uid})
+  const handleCompleteCloudProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    const currentWs = workspace || getInitialLocalWorkspace();
+    if (!firebaseUid) return;
     setAuthError('');
 
-    const cleanUsername = authUsername.toLowerCase().trim().replace(/[^a-z0-9_.-]/g, '');
-    if (cleanUsername.length < 2) {
+    const sanitizedUsername = authUsername.toLowerCase().trim().replace(/[^a-z0-9_.-]/g, '');
+    if (sanitizedUsername.length < 2) {
       setAuthError('El nombre de usuario debe tener al menos 2 letras o números.');
       return;
     }
-    if (!authPassword.trim()) {
-      setAuthError('Introduce tu contraseña.');
+
+    const takenByOther = workspace.users.some(
+      (u) =>
+        u.username.toLowerCase() === sanitizedUsername &&
+        u.firebaseUid !== firebaseUid
+    );
+    if (takenByOther) {
+      setAuthError(`El usuario @${sanitizedUsername} ya está en uso por otro compañero. Elige otro.`);
       return;
     }
 
-    if (authMode === 'login') {
-      const existing = currentWs.users.find((u) => u.username.toLowerCase() === cleanUsername);
-      if (!existing || existing.passwordHash !== authPassword.trim()) {
-        setAuthError(
-          currentWs.users.length > 0
-            ? 'Usuario o contraseña incorrectos. Si eres nuevo, pulsa en "Crear Cuenta".'
-            : 'Todavía no hay usuarios registrados. Pulsa en "Crear Cuenta" para crear la tuya.'
-        );
-        return;
-      }
-      setCurrentUser(existing);
-      localStorage.setItem('chikihub_logged_user', existing.username);
-      if (!selectedProjectId && currentWs.projects.length > 0) {
-        setSelectedProjectId(currentWs.projects[0].id);
-      }
-      setAuthPassword('');
-      showToast(`Sesión iniciada como @${existing.username}`);
-      maybeShowFirstTimeGooglePrompt(existing.username);
-    } else {
-      const alreadyExists = currentWs.users.some(
-        (u) => u.username.toLowerCase() === cleanUsername
-      );
-      if (alreadyExists) {
-        setAuthError('Ese nombre de usuario ya está registrado. Elige otro o inicia sesión.');
-        return;
-      }
-      const newUser: StudentAccount = {
-        id: `usr_${Date.now()}`,
-        firebaseUid: firebaseUid || undefined,
-        username: cleanUsername,
-        displayName: authDisplayName.trim() || cleanUsername,
-        passwordHash: authPassword.trim(),
+    setIsSavingProfile(true);
+    try {
+      const newProfile: StudentAccount = {
+        id: `fb_${firebaseUid}`,
+        firebaseUid,
+        username: sanitizedUsername,
+        displayName: authDisplayName.trim() || sanitizedUsername,
+        passwordHash: '',
         role: authRole.trim() || 'Estudiante de Informática',
         createdAt: new Date().toISOString(),
       };
-      const updated: WorkspaceData = {
-        ...currentWs,
-        users: mergeUsersByUsername(currentWs.users, [newUser]),
-      };
-      await saveWorkspace(updated);
-      if (firebaseUid) {
-        await syncUserProfileToFirestore(newUser);
+
+      const saved = await syncUserProfileToFirestore(newProfile);
+      if (!saved) {
+        setAuthError('No se pudo guardar tu perfil en la nube. Inténtalo de nuevo.');
+        return;
       }
-      setCurrentUser(newUser);
-      localStorage.setItem('chikihub_logged_user', newUser.username);
-      setAuthPassword('');
-      showToast(`Cuenta @${newUser.username} creada y guardada correctamente.`);
-      maybeShowFirstTimeGooglePrompt(newUser.username);
+
+      setCurrentUser(newProfile);
+      setNeedsProfileSetup(false);
+      localStorage.setItem('chikihub_logged_user', newProfile.username);
+      setWorkspace((prev) => {
+        const next = { ...prev, users: mergeUsersByUsername(prev.users, [newProfile]) };
+        persistWorkspaceLocally(next);
+        return next;
+      });
+      showToast(`¡Bienvenido @${newProfile.username}! Tu cuenta ya está sincronizada en tiempo real.`);
+    } finally {
+      setIsSavingProfile(false);
     }
   };
 
-  const handleLogoutStudent = () => {
+  const handleLogoutStudent = async () => {
     localStorage.removeItem('chikihub_logged_user');
     setCurrentUser(null);
+    setNeedsProfileSetup(false);
     setLiveInviteToast(null);
     setShowNotificationsPanel(false);
     seenInviteIdsRef.current.clear();
+    try {
+      await logoutGoogle();
+    } catch {
+      // ignore
+    }
   };
 
-  // Join a project permanently (updates localStorage + Firestore)
+  // Join a project permanently in Firestore (NEVER overwrites project state/main!)
   const addCurrentUserToProject = async (project: ProjectItem) => {
     if (!currentUser || !workspace) return;
+    if (firebaseUid) {
+      const ok = await joinProjectInFirestore(project, currentUser.username);
+      if (!ok) {
+        showToast('No se pudo unir al proyecto en la nube. Inténtalo de nuevo.');
+        return;
+      }
+    }
     const uname = currentUser.username.toLowerCase().trim();
     const updatedAuthUsers = Array.from(
       new Set([...project.authorizedUsernames.map((u) => u.toLowerCase().trim()), uname])
@@ -1201,10 +1161,8 @@ export default function App() {
       ...workspace,
       projects: workspace.projects.map((p) => (p.id === project.id ? updatedProj : p)),
     };
-    await saveWorkspace(updatedWorkspace, project.id);
-    if (firebaseUid) {
-      await joinProjectInFirestore(project, currentUser.username);
-    }
+    // skipCloudStateSync = true so we NEVER overwrite existing files/folders/tasks with empty arrays!
+    await saveWorkspace(updatedWorkspace, undefined, true);
     setUnlockedProjectIds((prev) => (prev.includes(project.id) ? prev : [...prev, project.id]));
     setSelectedProjectId(project.id);
     setCurrentFolderId('root');
@@ -1240,20 +1198,27 @@ export default function App() {
     }
   };
 
-  // Accept or Decline a Project Invitation Notification
+  // Accept or Decline a Project Invitation Notification (Real-Time Firestore)
   const handleRespondInvitation = async (
     invitation: ProjectInvitation,
     decision: 'accepted' | 'declined'
   ) => {
     if (!workspace || !currentUser) return;
+    const targetProject = workspace.projects.find((p) => p.id === invitation.projectId);
+
+    if (firebaseUid) {
+      await respondToInvitationInFirestore(invitation.id, decision);
+      if (decision === 'accepted' && targetProject) {
+        await joinProjectInFirestore(targetProject, currentUser.username);
+      }
+    }
+
     const nowIso = new Date().toISOString();
     const updatedInvitations = workspace.invitations.map((inv) =>
       inv.id === invitation.id ? { ...inv, status: decision, updatedAt: nowIso } : inv
     );
 
     let updatedProjects = workspace.projects;
-    const targetProject = workspace.projects.find((p) => p.id === invitation.projectId);
-
     if (decision === 'accepted' && targetProject) {
       const uname = currentUser.username.toLowerCase().trim();
       const updatedProj: ProjectItem = {
@@ -1283,14 +1248,8 @@ export default function App() {
       invitations: updatedInvitations,
     };
 
-    await saveWorkspace(updatedWorkspace, targetProject?.id);
-    if (firebaseUid) {
-      await respondToInvitationInFirestore(invitation.id, decision);
-      if (decision === 'accepted' && targetProject) {
-        await joinProjectInFirestore(targetProject, currentUser.username);
-      }
-    }
-
+    // skipCloudStateSync = true so accepting an invite NEVER wipes project files in Firestore!
+    await saveWorkspace(updatedWorkspace, undefined, true);
     setLiveInviteToast((prev) => (prev?.id === invitation.id ? null : prev));
     if (decision === 'accepted') {
       showToast(`¡Invitación aceptada! Ya formas parte de «${invitation.projectName}».`);
@@ -1418,19 +1377,36 @@ export default function App() {
       });
     }
 
+    // 1. FIRST sync project doc to Firestore so rules allow state/main + invitations!
+    const projectSynced = await syncProjectToFirestore(savedProject, !editingProject);
+    if (firebaseUid && !projectSynced) {
+      showToast('Error al guardar el proyecto en la nube. Inténtalo de nuevo.');
+      return;
+    }
+
+    // 2. If brand-new project, initialize its real-time shared state document immediately
+    if (!editingProject && firebaseUid) {
+      await syncProjectWorkspaceStateToFirestore(savedProject.id, {
+        folders: [],
+        documents: [],
+        tasks: [],
+        notices: [],
+        messages: [],
+      });
+    }
+
+    // 3. Send invitations to Firestore AFTER project doc exists in Firestore
+    for (const inv of createdInvitations) {
+      await createProjectInvitationInFirestore(inv);
+    }
+
+    // 4. Update local state immediately (skip overwriting state/main)
     const updatedWorkspace: WorkspaceData = {
       ...workspace,
       projects: nextProjects,
       invitations: [...createdInvitations, ...workspace.invitations],
     };
-
-    await saveWorkspace(updatedWorkspace, savedProject.id);
-    await syncProjectToFirestore(savedProject, !editingProject);
-
-    // Send invitations to Firestore AFTER project doc exists in Firestore
-    for (const inv of createdInvitations) {
-      await createProjectInvitationInFirestore(inv);
-    }
+    await saveWorkspace(updatedWorkspace, undefined, true);
 
     if (!editingProject) {
       setSelectedProjectId(savedProject.id);
@@ -1440,13 +1416,13 @@ export default function App() {
     if (createdInvitations.length > 0) {
       const names = createdInvitations.map((i) => `@${i.toUsername}`).join(', ');
       showToast(
-        `${editingProject ? 'Proyecto guardado' : `Proyecto «${savedProject.name}» creado`} · Invitación enviada a ${names}.`
+        `${editingProject ? 'Proyecto guardado' : `Proyecto «${savedProject.name}» creado`} · Invitación enviada en tiempo real a ${names}.`
       );
     } else {
       showToast(
         editingProject
-          ? `Proyecto «${savedProject.name}» actualizado y guardado.`
-          : `Proyecto «${savedProject.name}» creado y guardado.`
+          ? `Proyecto «${savedProject.name}» actualizado y sincronizado.`
+          : `Proyecto «${savedProject.name}» creado y publicado en tiempo real.`
       );
     }
     setSelectedInviteUsers([]);
@@ -1459,11 +1435,12 @@ export default function App() {
       isOpen: true,
       title: `¿Eliminar el proyecto "${proj.name}"?`,
       description:
-        'Se eliminarán sus carpetas, archivos y tareas en la web, liberando un hueco de los 5 proyectos activos gratuitos.',
+        'Se eliminarán sus carpetas, archivos y tareas en tiempo real para todo el equipo, liberando un hueco de los 5 proyectos activos gratuitos.',
       confirmLabel: 'Eliminar proyecto',
       isDanger: true,
       onConfirm: async () => {
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+        await deleteProjectFromFirestore(proj.id);
         const remainingProjects = workspace.projects.filter((p) => p.id !== proj.id);
         const updatedWorkspace: WorkspaceData = {
           ...workspace,
@@ -1475,14 +1452,13 @@ export default function App() {
           messages: workspace.messages.filter((m) => m.projectId !== proj.id),
           invitations: workspace.invitations.filter((inv) => inv.projectId !== proj.id),
         };
-        await saveWorkspace(updatedWorkspace);
-        await deleteProjectFromFirestore(proj.id);
+        await saveWorkspace(updatedWorkspace, undefined, true);
         if (selectedProjectId === proj.id) {
           const nextOwned = remainingProjects.find((p) => isUserMemberOfProject(p, currentUser));
           setSelectedProjectId(nextOwned?.id || '');
           setCurrentFolderId('root');
         }
-        showToast(`Proyecto "${proj.name}" eliminado.`);
+        showToast(`Proyecto "${proj.name}" eliminado en tiempo real.`);
       },
     });
   };
@@ -2370,13 +2346,13 @@ export default function App() {
     return <LegalPages page="terms" onNavigate={navigateTo} />;
   }
 
-  if (isLoadingWorkspace) {
+  if (isLoadingWorkspace || !firebaseAuthChecked) {
     return (
       <div className="min-h-screen bg-[#09090B] text-[#F4F4F6] flex items-center justify-center p-6">
         <div className="border border-[#24242E] bg-[#0E0E12] px-6 py-5 flex items-center gap-3">
           <RefreshCw className="w-4 h-4 text-[#3B82F6] animate-spin" />
           <span className="font-mono text-xs tracking-wider uppercase text-[#A1A1B2]">
-            Cargando Proyectos Nebrija App...
+            Conectando con Proyectos Nebrija App en tiempo real...
           </span>
         </div>
       </div>
@@ -2457,12 +2433,15 @@ export default function App() {
             <button
               type="button"
               onClick={() => {
-                setAuthMode((m) => (m === 'login' ? 'register' : 'login'));
-                document.getElementById('acceso-grupo')?.scrollIntoView({ behavior: 'smooth' });
+                if (needsProfileSetup) {
+                  document.getElementById('acceso-grupo')?.scrollIntoView({ behavior: 'smooth' });
+                } else {
+                  handleGoogleAccountSignIn();
+                }
               }}
               className="px-4 py-2 text-xs font-semibold bg-white hover:bg-zinc-200 text-[#09090B] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              {authMode === 'login' ? 'Crear Cuenta' : 'Iniciar Sesión'}
+              {needsProfileSetup ? 'Completar Perfil' : 'Entrar con Google'}
             </button>
           </div>
         </header>
@@ -2570,116 +2549,55 @@ export default function App() {
               </div>
             </div>
 
-            {/* Right Bento Column (5 cols): Login / Create Account Form */}
+            {/* Right Bento Column (5 cols): Real Personal Account Sign-In + First-Time Profile Setup */}
             <div
               id="acceso-grupo"
               className="lg:col-span-5 bg-[#0B0B0F] p-6 sm:p-8 flex flex-col justify-between"
             >
-              <div>
-                <div className="flex items-center justify-between pb-4 mb-6 border-b border-[#22222A]">
-                  <div>
-                    <h2 className="font-display font-bold text-lg text-white">
-                      {authMode === 'login' ? 'Iniciar Sesión' : 'Crear Cuenta de Grupo'}
-                    </h2>
-                    <p className="text-xs text-[#8E8E9E]">
-                      Identifícate para entrar al espacio del proyecto
-                    </p>
-                  </div>
-                  <span className="font-mono text-[11px] text-[#60A5FA] tabular-nums">
-                    01 / ACCESO
-                  </span>
-                </div>
-
-                {/* Rectangular Mode Switch */}
-                <div className="grid grid-cols-2 gap-px bg-[#24242E] border border-[#24242E] mb-6">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAuthMode('login');
-                      setAuthError('');
-                    }}
-                    className={`py-2.5 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                      authMode === 'login'
-                        ? 'bg-white text-[#09090B]'
-                        : 'bg-[#0E0E12] text-[#8E8E9E] hover:text-white'
-                    }`}
-                  >
-                    <LogIn className="w-3.5 h-3.5" />
-                    <span>Iniciar Sesión</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAuthMode('register');
-                      setAuthError('');
-                    }}
-                    className={`py-2.5 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                      authMode === 'register'
-                        ? 'bg-white text-[#09090B]'
-                        : 'bg-[#0E0E12] text-[#8E8E9E] hover:text-white'
-                    }`}
-                  >
-                    <UserPlus className="w-3.5 h-3.5" />
-                    <span>Crear Cuenta</span>
-                  </button>
-                </div>
-
-                <form onSubmit={handleStudentAuthSubmit} className="space-y-4">
-                  <div>
-                    <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1.5">
-                      Usuario
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={authUsername}
-                      onChange={(e) => setAuthUsername(e.target.value)}
-                      placeholder="ej. chiki, alex, lucia..."
-                      className="w-full h-11 px-3.5 bg-[#09090B] border border-[#2A2A35] text-sm text-white focus:outline-none focus:border-white"
-                    />
+              {!needsProfileSetup ? (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between pb-4 border-b border-[#22222A]">
+                    <div>
+                      <h2 className="font-display font-bold text-lg text-white">
+                        Tu Cuenta Personal
+                      </h2>
+                      <p className="text-xs text-[#8E8E9E]">
+                        Sincronización instantánea en la nube para todos los compañeros
+                      </p>
+                    </div>
+                    <span className="font-mono text-[11px] text-[#60A5FA] tabular-nums">
+                      01 / ACCESO
+                    </span>
                   </div>
 
-                  {authMode === 'register' && (
-                    <>
-                      <div>
-                        <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1.5">
-                          Nombre o Apodo
-                        </label>
-                        <input
-                          type="text"
-                          value={authDisplayName}
-                          onChange={(e) => setAuthDisplayName(e.target.value)}
-                          placeholder="ej. Adrián (Chiki)"
-                          className="w-full h-11 px-3.5 bg-[#09090B] border border-[#2A2A35] text-sm text-white focus:outline-none focus:border-white"
-                        />
+                  <div className="space-y-3 border border-[#22222A] bg-[#0E0E12] p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 border border-[#3B82F6]/40 bg-[#3B82F6]/10 flex items-center justify-center text-[#60A5FA] shrink-0">
+                        <Users className="w-4 h-4" />
                       </div>
-                      <div>
-                        <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1.5">
-                          Rol / Especialidad
-                        </label>
-                        <input
-                          type="text"
-                          value={authRole}
-                          onChange={(e) => setAuthRole(e.target.value)}
-                          placeholder="ej. Redes, Sistemas, Base de Datos..."
-                          className="w-full h-11 px-3.5 bg-[#09090B] border border-[#2A2A35] text-sm text-white focus:outline-none focus:border-white"
-                        />
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold text-white">
+                          Cada alumno usa su propia cuenta
+                        </p>
+                        <p className="text-[11px] text-[#8E8E9E] leading-relaxed">
+                          Entra con tu cuenta de Google personal y elige tu <code className="text-white">@usuario</code>. Así podrás explorar proyectos de clase, recibir invitaciones en directo y colaborar desde cualquier navegador o móvil.
+                        </p>
                       </div>
-                    </>
-                  )}
+                    </div>
 
-                  <div>
-                    <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1.5">
-                      Contraseña
-                    </label>
-                    <input
-                      type="password"
-                      required
-                      value={authPassword}
-                      onChange={(e) => setAuthPassword(e.target.value)}
-                      placeholder="Introduce tu contraseña"
-                      className="w-full h-11 px-3.5 bg-[#09090B] border border-[#2A2A35] text-sm text-white focus:outline-none focus:border-white"
-                    />
+                    <div className="flex items-start gap-3 pt-2 border-t border-[#1D1D25]">
+                      <div className="w-8 h-8 border border-emerald-500/40 bg-emerald-500/10 flex items-center justify-center text-emerald-400 shrink-0">
+                        <Zap className="w-4 h-4" />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold text-white">
+                          Cambios al instante sin refrescar
+                        </p>
+                        <p className="text-[11px] text-[#8E8E9E] leading-relaxed">
+                          Si un compañero crea, edita o elimina un archivo, carpeta, tarea o invitación, se actualiza en tu pantalla en milisegundos.
+                        </p>
+                      </div>
+                    </div>
                   </div>
 
                   {authError && (
@@ -2689,13 +2607,147 @@ export default function App() {
                   )}
 
                   <button
-                    type="submit"
-                    className="w-full h-11 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider transition-colors cursor-pointer"
+                    type="button"
+                    disabled={isGoogleLoggingIn}
+                    onClick={handleGoogleAccountSignIn}
+                    className="w-full h-12 bg-white hover:bg-zinc-200 disabled:opacity-60 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center justify-center gap-3 transition-colors cursor-pointer"
                   >
-                    {authMode === 'login' ? 'Entrar a ChikiHub' : 'Registrar Cuenta y Entrar'}
+                    {isGoogleLoggingIn ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Conectando con Google...</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                          <path
+                            fill="#4285F4"
+                            d="M23.745 12.27c0-.79-.07-1.54-.19-2.27h-11.3v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"
+                          />
+                          <path
+                            fill="#34A853"
+                            d="M12.255 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96h-3.98v3.09C3.515 21.3 7.565 24 12.255 24z"
+                          />
+                          <path
+                            fill="#FBBC05"
+                            d="M5.525 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62h-3.98a11.86 11.86 0 0 0 0 10.76l3.98-3.09z"
+                          />
+                          <path
+                            fill="#EA4335"
+                            d="M12.255 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C18.205 1.19 15.495 0 12.255 0c-4.69 0-8.74 2.7-10.71 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96z"
+                          />
+                        </svg>
+                        <span>Continuar con Google</span>
+                      </>
+                    )}
                   </button>
-                </form>
-              </div>
+
+                  <p className="text-[11px] text-[#7E7E8E] leading-relaxed text-center">
+                    Si ya creaste tu perfil en otro ordenador o móvil, al entrar con tu Google recuperarás automáticamente todos tus proyectos, archivos e invitaciones.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  <div className="flex items-center justify-between pb-4 border-b border-[#22222A]">
+                    <div>
+                      <h2 className="font-display font-bold text-lg text-white">
+                        Completa tu Perfil
+                      </h2>
+                      <p className="text-xs text-[#8E8E9E]">
+                        Elige tu @usuario para que tus compañeros puedan invitarte
+                      </p>
+                    </div>
+                    <span className="font-mono text-[11px] text-emerald-400 tabular-nums">
+                      PASO FINAL
+                    </span>
+                  </div>
+
+                  <div className="px-3.5 py-2.5 border border-emerald-500/30 bg-emerald-500/10 flex items-center justify-between gap-2 text-xs">
+                    <span className="text-emerald-300 truncate">
+                      Google conectado: <strong className="text-white">{googleUserEmail}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleLogoutStudent}
+                      className="text-[11px] text-[#A1A1B2] hover:text-white underline shrink-0 cursor-pointer"
+                    >
+                      Cambiar cuenta
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleCompleteCloudProfile} className="space-y-4">
+                    <div>
+                      <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1.5">
+                        Tu @usuario (único en la plataforma)
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-mono text-sm text-[#60A5FA]">
+                          @
+                        </span>
+                        <input
+                          type="text"
+                          required
+                          value={authUsername}
+                          onChange={(e) => setAuthUsername(e.target.value)}
+                          placeholder="ej. adrian, lucia_dev..."
+                          className="w-full h-11 pl-8 pr-3.5 bg-[#09090B] border border-[#2A2A35] text-sm text-white focus:outline-none focus:border-white"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1.5">
+                        Nombre o Apodo visible
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={authDisplayName}
+                        onChange={(e) => setAuthDisplayName(e.target.value)}
+                        placeholder="ej. Adrián (Chiki)"
+                        className="w-full h-11 px-3.5 bg-[#09090B] border border-[#2A2A35] text-sm text-white focus:outline-none focus:border-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1.5">
+                        Rol / Especialidad
+                      </label>
+                      <input
+                        type="text"
+                        value={authRole}
+                        onChange={(e) => setAuthRole(e.target.value)}
+                        placeholder="ej. Redes, Sistemas, Base de Datos..."
+                        className="w-full h-11 px-3.5 bg-[#09090B] border border-[#2A2A35] text-sm text-white focus:outline-none focus:border-white"
+                      />
+                    </div>
+
+                    {authError && (
+                      <div className="p-3 border border-rose-500/40 bg-rose-500/10 text-xs text-rose-300">
+                        {authError}
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={isSavingProfile}
+                      className="w-full h-11 bg-white hover:bg-zinc-200 disabled:opacity-60 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    >
+                      {isSavingProfile ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Creando perfil en la nube...</span>
+                        </>
+                      ) : (
+                        <>
+                          <UserPlus className="w-3.5 h-3.5" />
+                          <span>Crear Mi Perfil y Entrar</span>
+                        </>
+                      )}
+                    </button>
+                  </form>
+                </div>
+              )}
 
               <div className="pt-6 mt-6 border-t border-[#22222A] flex items-center justify-between text-[11px] text-[#7E7E8E]">
                 <span>100% Gratis · Edición en Google Docs</span>
@@ -3186,8 +3238,8 @@ export default function App() {
           </div>
 
           {/* Non-clipping User & Logout Badge on the right */}
-          <div className="hidden md:flex items-center gap-2 shrink-0 pl-2">
-            <span className="px-3 py-1.5 border border-[#2A2A35] bg-[#121218] font-mono text-xs text-white whitespace-nowrap">
+          <div className="flex items-center gap-2 shrink-0 pl-2">
+            <span className="px-2.5 sm:px-3 py-1.5 border border-[#2A2A35] bg-[#121218] font-mono text-[11px] sm:text-xs text-white whitespace-nowrap">
               @{currentUser.username}
             </span>
             <button

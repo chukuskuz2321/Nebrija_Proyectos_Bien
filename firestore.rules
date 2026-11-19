@@ -283,7 +283,7 @@ service cloud.firestore {
 
     // /users/{userId} — Public non-PII student profiles for autocomplete discovery
     match /users/{userId} {
-      allow get: if isVerified() && isValidId(userId) && (existing().searchable == true || request.auth.uid == userId || isAdmin());
+      allow get: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin() || (resource != null && existing().searchable == true));
       allow list: if isVerified() && (existing().searchable == true || existing().uid == request.auth.uid || isAdmin());
       allow create: if isVerified() && isValidId(userId) &&
         isValidUserProfile(incoming()) &&
@@ -303,7 +303,7 @@ service cloud.firestore {
 
     // /invitations/{invitationId} — Real-Time Project Invitations
     match /invitations/{invitationId} {
-      allow get: if isVerified() && isValidId(invitationId) && (existing().toUid == request.auth.uid || existing().fromUid == request.auth.uid || isAdmin());
+      allow get: if isVerified() && isValidId(invitationId) && (isAdmin() || (resource != null && (existing().toUid == request.auth.uid || existing().fromUid == request.auth.uid)));
       allow list: if isVerified() && (existing().toUid == request.auth.uid || existing().fromUid == request.auth.uid || isAdmin());
       allow create: if isVerified() && isValidId(invitationId) &&
         isValidProjectInvitation(incoming()) &&
@@ -332,7 +332,7 @@ service cloud.firestore {
 
     // /projects/{projectId}
     match /projects/{projectId} {
-      allow get: if isVerified() && isValidId(projectId) && (existing().visibility == 'class' || existing().ownerId == request.auth.uid || request.auth.uid in existing().memberUids || isAdmin());
+      allow get: if isVerified() && isValidId(projectId) && (isAdmin() || (resource != null && (existing().visibility == 'class' || existing().ownerId == request.auth.uid || request.auth.uid in existing().memberUids)));
       allow list: if isVerified() && (existing().visibility == 'class' || existing().ownerId == request.auth.uid || request.auth.uid in existing().memberUids || isAdmin());
       allow create: if isVerified() && isValidId(projectId) &&
         isValidProject(incoming()) &&
