@@ -1,0 +1,20 @@
+{
+  "users": [
+    {
+      "id": "usr_chiki",
+      "username": "chiki",
+      "displayName": "Chiki (Creador)",
+      "passwordHash": "1234",
+      "role": "Coordinador del Grupo",
+      "createdAt": "2026-11-10T09:00:00.000Z"
+    }
+  ],
+  "projects": [],
+  "folders": [],
+  "documents": [],
+  "tasks": [],
+  "notices": [],
+  "snippets": [],
+  "messages": [],
+  "activities": []
+}

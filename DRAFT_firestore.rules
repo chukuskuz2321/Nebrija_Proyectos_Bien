@@ -1,0 +1,427 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'adrianbelvis14@gmail.com'
+      );
+    }
+
+    function isParentProjectOwner(projectId) {
+      return exists(/databases/$(database)/documents/projects/$(projectId)) &&
+        get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+    }
+
+    // 1. UserProfile Blueprint
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'username', 'displayName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'username', 'displayName', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.uid == request.auth.uid &&
+        data.username is string && data.username.size() >= 2 && data.username.size() <= 40 && data.username.matches('^[a-z0-9_.\\-]+$') &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 2. Project Blueprint
+    function isValidProject(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'subject', 'description', 'ownerId', 'ownerUsername',
+          'hasPassword', 'passwordHash', 'dueDate', 'driveFolderId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'subject', 'description', 'ownerId', 'ownerUsername',
+          'hasPassword', 'passwordHash', 'dueDate', 'driveFolderId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 80 &&
+        data.description is string && data.description.size() <= 1000 &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.ownerUsername is string && data.ownerUsername.size() >= 2 && data.ownerUsername.size() <= 40 &&
+        data.hasPassword is bool &&
+        data.passwordHash is string && data.passwordHash.size() <= 128 &&
+        data.dueDate is string && data.dueDate.size() <= 40 &&
+        data.driveFolderId is string && data.driveFolderId.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 3. ProjectMember Blueprint
+    function isValidProjectMember(data) {
+      return data.keys().hasAll(['id', 'projectId', 'ownerId', 'username', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'projectId', 'ownerId', 'username', 'createdAt']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.username is string && data.username.size() >= 2 && data.username.size() <= 40 && data.username.matches('^[a-z0-9_.\\-]+$') &&
+        data.createdAt is timestamp;
+    }
+
+    // 4. Folder Blueprint
+    function isValidFolder(data) {
+      return data.keys().hasAll(['id', 'projectId', 'ownerId', 'parentId', 'name', 'driveFolderId', 'createdBy', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'projectId', 'ownerId', 'parentId', 'name', 'driveFolderId', 'createdBy', 'createdAt']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.parentId is string && data.parentId.size() >= 1 && data.parentId.size() <= 128 && data.parentId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.driveFolderId is string && data.driveFolderId.size() <= 128 &&
+        data.createdBy is string && data.createdBy.size() >= 2 && data.createdBy.size() <= 40 &&
+        data.createdAt is timestamp;
+    }
+
+    // 5. ProjectDocument Blueprint
+    function isValidProjectDocument(data) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'ownerId', 'folderId', 'title', 'content',
+          'googleDocId', 'googleDocUrl', 'assigneeUsername', 'status', 'lastModifiedBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'projectId', 'ownerId', 'folderId', 'title', 'content',
+          'googleDocId', 'googleDocUrl', 'assigneeUsername', 'status', 'lastModifiedBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.folderId is string && data.folderId.size() >= 1 && data.folderId.size() <= 128 && data.folderId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 150 &&
+        data.content is string && data.content.size() <= 50000 &&
+        data.googleDocId is string && data.googleDocId.size() <= 128 &&
+        data.googleDocUrl is string && data.googleDocUrl.size() <= 500 &&
+        data.assigneeUsername is string && data.assigneeUsername.size() <= 40 &&
+        data.status is string && data.status.size() >= 5 && data.status.size() <= 20 &&
+        (data.status == 'draft' || data.status == 'in_review' || data.status == 'completed') &&
+        data.lastModifiedBy is string && data.lastModifiedBy.size() >= 1 && data.lastModifiedBy.size() <= 40 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 6. ProjectTask Blueprint
+    function isValidProjectTask(data) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'ownerId', 'title', 'description', 'assigneeUsername',
+          'dueDate', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'projectId', 'ownerId', 'title', 'description', 'assigneeUsername',
+          'dueDate', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.description is string && data.description.size() <= 1000 &&
+        data.assigneeUsername is string && data.assigneeUsername.size() <= 40 &&
+        data.dueDate is string && data.dueDate.size() <= 40 &&
+        data.status is string && data.status.size() >= 7 && data.status.size() <= 15 &&
+        (data.status == 'pending' || data.status == 'in_progress' || data.status == 'completed') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 7. ProjectNotice Blueprint
+    function isValidProjectNotice(data) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'ownerId', 'title', 'message',
+          'priority', 'authorUsername', 'targetUsername', 'archived', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'projectId', 'ownerId', 'title', 'message',
+          'priority', 'authorUsername', 'targetUsername', 'archived', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 1000 &&
+        data.priority is string && data.priority.size() >= 6 && data.priority.size() <= 12 &&
+        (data.priority == 'normal' || data.priority == 'important' || data.priority == 'urgent') &&
+        data.authorUsername is string && data.authorUsername.size() >= 2 && data.authorUsername.size() <= 40 &&
+        data.targetUsername is string && data.targetUsername.size() >= 2 && data.targetUsername.size() <= 40 &&
+        data.archived is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 8. CodeSnippet Blueprint
+    function isValidCodeSnippet(data) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'ownerId', 'folderId', 'title',
+          'language', 'code', 'authorUsername', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'projectId', 'ownerId', 'folderId', 'title',
+          'language', 'code', 'authorUsername', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.folderId is string && data.folderId.size() >= 1 && data.folderId.size() <= 128 && data.folderId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+        data.language is string && data.language.size() >= 1 && data.language.size() <= 30 &&
+        data.code is string && data.code.size() >= 1 && data.code.size() <= 20000 &&
+        data.authorUsername is string && data.authorUsername.size() >= 2 && data.authorUsername.size() <= 40 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 9. ChatMessage Blueprint
+    function isValidChatMessage(data) {
+      return data.keys().hasAll(['id', 'projectId', 'ownerId', 'senderUsername', 'text', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'projectId', 'ownerId', 'senderUsername', 'text', 'createdAt']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.senderUsername is string && data.senderUsername.size() >= 2 && data.senderUsername.size() <= 40 &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 1000 &&
+        data.createdAt is timestamp;
+    }
+
+    // Admins collection (Read-only for verified admin lookup)
+    match /admins/{adminId} {
+      allow get: if isVerified() && isValidId(adminId) && request.auth.uid == adminId;
+      allow list, create, update, delete: if false;
+    }
+
+    // /users/{userId}
+    match /users/{userId} {
+      allow get: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isVerified() && (existing().uid == request.auth.uid || isAdmin());
+      allow create: if isVerified() && isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (request.auth.uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'username', 'updatedAt']))
+        );
+      allow delete: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+    }
+
+    // /projects/{projectId}
+    match /projects/{projectId} {
+      allow get: if isVerified() && isValidId(projectId) && (existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerified() && isValidId(projectId) &&
+        isValidProject(incoming()) &&
+        incoming().id == projectId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(projectId) &&
+        isValidProject(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (existing().ownerId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'subject', 'description', 'hasPassword', 'passwordHash', 'dueDate', 'driveFolderId', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isVerified() && isValidId(projectId) && (existing().ownerId == request.auth.uid || isAdmin());
+
+      // /projects/{projectId}/members/{memberId}
+      match /members/{memberId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(memberId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(memberId) &&
+          isValidProjectMember(incoming()) &&
+          incoming().id == memberId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          isParentProjectOwner(projectId);
+        allow update: if false;
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(memberId) && (isParentProjectOwner(projectId) || isAdmin());
+      }
+
+      // /projects/{projectId}/folders/{folderId}
+      match /folders/{folderId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(folderId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(folderId) &&
+          isValidFolder(incoming()) &&
+          incoming().id == folderId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          isParentProjectOwner(projectId);
+        allow update: if false;
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(folderId) && (isParentProjectOwner(projectId) || isAdmin());
+      }
+
+      // /projects/{projectId}/documents/{documentId}
+      match /documents/{documentId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(documentId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(documentId) &&
+          isValidProjectDocument(incoming()) &&
+          incoming().id == documentId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isParentProjectOwner(projectId);
+        allow update: if isVerified() && isValidId(projectId) && isValidId(documentId) &&
+          isValidProjectDocument(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().projectId == existing().projectId &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() ||
+            (existing().status != 'completed' && isParentProjectOwner(projectId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'folderId', 'title', 'content', 'googleDocId', 'googleDocUrl',
+                'assigneeUsername', 'status', 'lastModifiedBy', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(documentId) && (isParentProjectOwner(projectId) || isAdmin());
+      }
+
+      // /projects/{projectId}/tasks/{taskId}
+      match /tasks/{taskId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(taskId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(taskId) &&
+          isValidProjectTask(incoming()) &&
+          incoming().id == taskId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isParentProjectOwner(projectId);
+        allow update: if isVerified() && isValidId(projectId) && isValidId(taskId) &&
+          isValidProjectTask(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().projectId == existing().projectId &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() ||
+            (existing().status != 'completed' && isParentProjectOwner(projectId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'title', 'description', 'assigneeUsername', 'dueDate', 'status', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(taskId) && (isParentProjectOwner(projectId) || isAdmin());
+      }
+
+      // /projects/{projectId}/notices/{noticeId}
+      match /notices/{noticeId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(noticeId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(noticeId) &&
+          isValidProjectNotice(incoming()) &&
+          incoming().id == noticeId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isParentProjectOwner(projectId);
+        allow update: if isVerified() && isValidId(projectId) && isValidId(noticeId) &&
+          isValidProjectNotice(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().projectId == existing().projectId &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() ||
+            (isParentProjectOwner(projectId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'title', 'message', 'priority', 'archived', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(noticeId) && (isParentProjectOwner(projectId) || isAdmin());
+      }
+
+      // /projects/{projectId}/snippets/{snippetId}
+      match /snippets/{snippetId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(snippetId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(snippetId) &&
+          isValidCodeSnippet(incoming()) &&
+          incoming().id == snippetId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isParentProjectOwner(projectId);
+        allow update: if isVerified() && isValidId(projectId) && isValidId(snippetId) &&
+          isValidCodeSnippet(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().projectId == existing().projectId &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            isAdmin() ||
+            (isParentProjectOwner(projectId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'folderId', 'title', 'language', 'code', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(snippetId) && (isParentProjectOwner(projectId) || isAdmin());
+      }
+
+      // /projects/{projectId}/messages/{messageId}
+      match /messages/{messageId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(messageId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerified() && isValidId(projectId) && isValidId(messageId) &&
+          isValidChatMessage(incoming()) &&
+          incoming().id == messageId &&
+          incoming().projectId == projectId &&
+          incoming().createdAt == request.time &&
+          isParentProjectOwner(projectId);
+        allow update: if false;
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(messageId) && (isParentProjectOwner(projectId) || isAdmin());
+      }
+    }
+  }
+}

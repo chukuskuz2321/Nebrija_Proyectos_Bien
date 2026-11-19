@@ -1,0 +1,6 @@
+{
+  "name": "ChikiHub — Proyectos de Informática",
+  "description": "Plataforma colaborativa de proyectos de informática estilo iOS 27 con sincronización en vivo con Google Docs, carpetas, tareas, fragmentos de código e IA del proyecto. Creado por Chiki.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
