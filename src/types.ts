@@ -1,6 +1,7 @@
 export type TaskStatus = 'pending' | 'in_progress' | 'completed';
 export type DocumentStatus = 'draft' | 'in_review' | 'completed';
 export type NoticePriority = 'normal' | 'important' | 'urgent';
+export type InvitationStatus = 'pending' | 'accepted' | 'declined';
 
 // Free-Tier Hard Limits to guarantee 100% Free Database & Hosting ($0 cost)
 export const MAX_ACTIVE_PROJECTS = 5;
@@ -11,6 +12,7 @@ export type GoogleEditorKind = 'docs' | 'sheets' | 'slides' | null;
 
 export interface StudentAccount {
   id: string;
+  firebaseUid?: string; // Linked Firebase Auth UID when signed in with Google
   username: string;
   displayName: string;
   passwordHash: string;
@@ -28,8 +30,24 @@ export interface ProjectItem {
   hasPassword: boolean;
   passwordHash: string;
   authorizedUsernames: string[];
+  memberUids?: string[];
+  visibility?: 'class' | 'private';
   dueDate: string;
   driveFolderId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectInvitation {
+  id: string;
+  projectId: string;
+  projectName: string;
+  projectSubject: string;
+  fromUid: string;
+  fromUsername: string;
+  toUid: string;
+  toUsername: string;
+  status: InvitationStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -135,4 +153,5 @@ export interface WorkspaceData {
   snippets: CodeSnippetItem[];
   messages: ChatMessageItem[];
   activities: ActivityLogItem[];
+  invitations: ProjectInvitation[];
 }

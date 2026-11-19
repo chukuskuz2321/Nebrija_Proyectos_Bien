@@ -46,6 +46,7 @@ export const INITIAL_WORKSPACE = {
   snippets: [],
   messages: [],
   activities: [],
+  invitations: [],
 };
 
 // In-memory fallback store in case filesystem is read-only

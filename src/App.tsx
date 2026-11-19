@@ -39,11 +39,17 @@ import {
   ArrowRight,
   Layers,
   ShieldCheck,
+  Compass,
+  Search,
+  Users,
+  Check,
+  Clock,
 } from 'lucide-react';
 import {
   WorkspaceData,
   StudentAccount,
   ProjectItem,
+  ProjectInvitation,
   FolderItem,
   DocumentItem,
   TaskItem,
@@ -55,10 +61,21 @@ import {
   MAX_SINGLE_FILE_BYTES,
 } from './types';
 import {
+  auth,
   initAuth,
   googleSignIn,
   logoutGoogle,
+  syncUserProfileToFirestore,
+  subscribeToDirectoryUsers,
+  subscribeToClassProjects,
   syncProjectToFirestore,
+  joinProjectInFirestore,
+  deleteProjectFromFirestore,
+  syncProjectWorkspaceStateToFirestore,
+  subscribeToProjectWorkspaceState,
+  createProjectInvitationInFirestore,
+  respondToInvitationInFirestore,
+  subscribeToUserInvitations,
   syncFolderToFirestore,
   syncDocumentToFirestore,
   syncTaskToFirestore,
@@ -80,8 +97,16 @@ import {
 import { GoogleSignInButton } from './components/GoogleSignInButton';
 import { ChikiOnboardingModal } from './components/ChikiOnboardingModal';
 import { LegalPages } from './components/LegalPages';
+import { UserInvitePicker } from './components/UserInvitePicker';
 
-type BentoSectionTab = 'overview' | 'files' | 'tasks' | 'notices' | 'assistant' | 'projects';
+type BentoSectionTab =
+  | 'overview'
+  | 'files'
+  | 'tasks'
+  | 'notices'
+  | 'assistant'
+  | 'projects'
+  | 'explore';
 
 interface ConfirmDialogState {
   isOpen: boolean;
@@ -159,6 +184,8 @@ function dataUrlToBlob(
 }
 
 const LOCAL_WORKSPACE_STORAGE_KEY = 'chikihub_workspace_prod_v4';
+const LOCAL_SELECTED_PROJECT_KEY = 'chikihub_selected_project_v4';
+const LOCAL_UNLOCKED_PROJECTS_KEY = 'chikihub_unlocked_projects_v4';
 
 const DEFAULT_WORKSPACE_FALLBACK: WorkspaceData = {
   users: [],
@@ -170,21 +197,98 @@ const DEFAULT_WORKSPACE_FALLBACK: WorkspaceData = {
   snippets: [],
   messages: [],
   activities: [],
+  invitations: [],
 };
+
+function normalizeWorkspaceData(raw: Partial<WorkspaceData> | null | undefined): WorkspaceData {
+  return {
+    users: Array.isArray(raw?.users) ? raw!.users : [],
+    projects: Array.isArray(raw?.projects) ? raw!.projects : [],
+    folders: Array.isArray(raw?.folders) ? raw!.folders : [],
+    documents: Array.isArray(raw?.documents) ? raw!.documents : [],
+    tasks: Array.isArray(raw?.tasks) ? raw!.tasks : [],
+    notices: Array.isArray(raw?.notices) ? raw!.notices : [],
+    snippets: Array.isArray(raw?.snippets) ? raw!.snippets : [],
+    messages: Array.isArray(raw?.messages) ? raw!.messages : [],
+    activities: Array.isArray(raw?.activities) ? raw!.activities : [],
+    invitations: Array.isArray(raw?.invitations) ? raw!.invitations : [],
+  };
+}
 
 function getInitialLocalWorkspace(): WorkspaceData {
   try {
     const raw = localStorage.getItem(LOCAL_WORKSPACE_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.users) && Array.isArray(parsed.projects)) {
-        return parsed as WorkspaceData;
+      if (parsed && typeof parsed === 'object') {
+        return normalizeWorkspaceData(parsed);
       }
     }
   } catch {
     // ignore parse errors
   }
   return DEFAULT_WORKSPACE_FALLBACK;
+}
+
+// Guaranteed localStorage persistence with automatic oversized-blob fallback so
+// accounts, projects, links, folders, tasks, notices and invitations NEVER fail to save.
+function persistWorkspaceLocally(ws: WorkspaceData) {
+  try {
+    localStorage.setItem(LOCAL_WORKSPACE_STORAGE_KEY, JSON.stringify(ws));
+  } catch {
+    try {
+      const compactWs: WorkspaceData = {
+        ...ws,
+        documents: ws.documents.map((d) => ({
+          ...d,
+          fileDataUrl: d.fileDataUrl && d.fileDataUrl.length <= 200000 ? d.fileDataUrl : '',
+        })),
+      };
+      localStorage.setItem(LOCAL_WORKSPACE_STORAGE_KEY, JSON.stringify(compactWs));
+    } catch {
+      // ignore if browser blocks storage completely
+    }
+  }
+}
+
+function mergeById<T extends { id: string }>(localArr: T[], incomingArr: T[]): T[] {
+  const map = new Map<string, T>();
+  for (const item of localArr) {
+    if (item?.id) map.set(item.id, item);
+  }
+  for (const item of incomingArr) {
+    if (item?.id) map.set(item.id, item);
+  }
+  return Array.from(map.values());
+}
+
+function mergeUsersByUsername(
+  localUsers: StudentAccount[],
+  incomingUsers: StudentAccount[]
+): StudentAccount[] {
+  const map = new Map<string, StudentAccount>();
+  for (const u of localUsers) {
+    const key = u.username.toLowerCase().trim();
+    if (key) map.set(key, u);
+  }
+  for (const u of incomingUsers) {
+    const key = u.username.toLowerCase().trim();
+    if (!key) continue;
+    const prev = map.get(key);
+    if (prev) {
+      map.set(key, {
+        ...prev,
+        displayName: u.displayName || prev.displayName,
+        role: u.role || prev.role,
+        firebaseUid: u.firebaseUid || prev.firebaseUid,
+        // Keep local passwordHash if incoming cloud profile omits PII/password
+        passwordHash: prev.passwordHash || u.passwordHash,
+      });
+    } else {
+      map.set(key, u);
+    }
+  }
+  return Array.from(map.values());
 }
 
 export default function App() {
@@ -226,7 +330,8 @@ export default function App() {
   const [authRole, setAuthRole] = useState<string>('Estudiante de Informática');
   const [authError, setAuthError] = useState<string>('');
 
-  // Google Workspace OAuth State & Guard Modal
+  // Google Workspace OAuth & Firebase Auth State
+  const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
   const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
   const [isGoogleLoggingIn, setIsGoogleLoggingIn] = useState<boolean>(false);
@@ -250,14 +355,39 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Active Project & Access Control
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
-  const [unlockedProjectIds, setUnlockedProjectIds] = useState<string[]>([]);
+  // Active Project & Access Control (persisted in localStorage)
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(() => {
+    try {
+      return localStorage.getItem(LOCAL_SELECTED_PROJECT_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [unlockedProjectIds, setUnlockedProjectIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(LOCAL_UNLOCKED_PROJECTS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
   const [passwordPromptProject, setPasswordPromptProject] = useState<ProjectItem | null>(null);
   const [projectPasswordInput, setProjectPasswordInput] = useState<string>('');
   const [projectPasswordError, setProjectPasswordError] = useState<string>('');
 
-  // Spacious Multi-Section Navigation (6 Dedicated Bento Tabs)
+  // Notifications Center & Real-Time On-Screen Invitation Toast
+  const [showNotificationsPanel, setShowNotificationsPanel] = useState<boolean>(false);
+  const [liveInviteToast, setLiveInviteToast] = useState<ProjectInvitation | null>(null);
+  const seenInviteIdsRef = useRef<Set<string>>(new Set());
+
+  // Explore Projects Search & Filter
+  const [exploreSearchQuery, setExploreSearchQuery] = useState<string>('');
+  const [exploreFilter, setExploreFilter] = useState<'all' | 'open' | 'protected' | 'others'>(
+    'all'
+  );
+
+  // Spacious Multi-Section Navigation (7 Dedicated Bento Tabs)
   const [activeSection, setActiveSection] = useState<BentoSectionTab>('overview');
   const [currentFolderId, setCurrentFolderId] = useState<string>('root');
 
@@ -280,10 +410,10 @@ export default function App() {
   const [projName, setProjName] = useState<string>('');
   const [projSubject, setProjSubject] = useState<string>('');
   const [projDesc, setProjDesc] = useState<string>('');
-  const [projDueDate, setProjDueDate] = useState<string>('2026-12-10');
+  const [projDueDate, setProjDueDate] = useState<string>('2026-12-15');
   const [projHasPassword, setProjHasPassword] = useState<boolean>(true);
   const [projPassword, setProjPassword] = useState<string>('');
-  const [projAuthUsersInput, setProjAuthUsersInput] = useState<string>('');
+  const [selectedInviteUsers, setSelectedInviteUsers] = useState<StudentAccount[]>([]);
 
   const [showFolderModal, setShowFolderModal] = useState<boolean>(false);
   const [newFolderName, setNewFolderName] = useState<string>('');
@@ -336,55 +466,73 @@ export default function App() {
     }, 4200);
   }, []);
 
-  // Load workspace from backend and merge with local cache
+  // Persist selectedProjectId and unlockedProjectIds across refreshes
+  useEffect(() => {
+    try {
+      if (selectedProjectId) {
+        localStorage.setItem(LOCAL_SELECTED_PROJECT_KEY, selectedProjectId);
+      }
+    } catch {
+      // ignore
+    }
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_UNLOCKED_PROJECTS_KEY, JSON.stringify(unlockedProjectIds));
+    } catch {
+      // ignore
+    }
+  }, [unlockedProjectIds]);
+
+  // Load workspace from localStorage first (NEVER wiped by stateless Vercel /api/workspace!)
   useEffect(() => {
     const localData = getInitialLocalWorkspace();
+    const restoreSession = (ws: WorkspaceData) => {
+      const savedUsername = localStorage.getItem('chikihub_logged_user');
+      if (savedUsername) {
+        const foundUser =
+          ws.users.find((u) => u.username.toLowerCase() === savedUsername.toLowerCase()) || null;
+        if (foundUser) setCurrentUser(foundUser);
+      }
+      const savedProjId = localStorage.getItem(LOCAL_SELECTED_PROJECT_KEY);
+      if (savedProjId && ws.projects.some((p) => p.id === savedProjId)) {
+        setSelectedProjectId(savedProjId);
+      } else if (ws.projects.length > 0) {
+        setSelectedProjectId((prev) => prev || ws.projects[0].id);
+      }
+    };
+
+    // Hydrate immediately from local cache so refreshes never flash empty
+    setWorkspace(localData);
+    restoreSession(localData);
+
     fetch('/api/workspace')
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then((serverData: WorkspaceData) => {
-        if (!serverData || !Array.isArray(serverData.users)) {
-          throw new Error('Invalid workspace payload');
-        }
-        const mergedUsers = [...serverData.users];
-        for (const lu of localData.users) {
-          if (!mergedUsers.some((su) => su.username.toLowerCase() === lu.username.toLowerCase())) {
-            mergedUsers.push(lu);
-          }
-        }
+      .then((rawServerData: Partial<WorkspaceData>) => {
+        const serverData = normalizeWorkspaceData(rawServerData);
+        // CRITICAL: Union-merge by ID so stateless Vercel empty arrays NEVER wipe localStorage!
         const mergedWorkspace: WorkspaceData = {
-          ...serverData,
-          users: mergedUsers,
+          users: mergeUsersByUsername(localData.users, serverData.users),
+          projects: mergeById(localData.projects, serverData.projects),
+          folders: mergeById(localData.folders, serverData.folders),
+          documents: mergeById(localData.documents, serverData.documents),
+          tasks: mergeById(localData.tasks, serverData.tasks),
+          notices: mergeById(localData.notices, serverData.notices),
+          snippets: mergeById(localData.snippets, serverData.snippets),
+          messages: mergeById(localData.messages, serverData.messages),
+          activities: mergeById(localData.activities, serverData.activities),
+          invitations: mergeById(localData.invitations, serverData.invitations),
         };
         setWorkspace(mergedWorkspace);
-        try {
-          localStorage.setItem(LOCAL_WORKSPACE_STORAGE_KEY, JSON.stringify(mergedWorkspace));
-        } catch {
-          // ignore quota error
-        }
-        const savedUsername = localStorage.getItem('chikihub_logged_user');
-        if (savedUsername) {
-          const foundUser =
-            mergedWorkspace.users.find((u) => u.username === savedUsername) || null;
-          setCurrentUser(foundUser);
-        }
-        if (mergedWorkspace.projects.length > 0) {
-          setSelectedProjectId(mergedWorkspace.projects[0].id);
-        }
+        persistWorkspaceLocally(mergedWorkspace);
+        restoreSession(mergedWorkspace);
       })
-      .catch((err) => {
-        console.warn('Using local workspace cache:', err);
-        setWorkspace(localData);
-        const savedUsername = localStorage.getItem('chikihub_logged_user');
-        if (savedUsername) {
-          const foundUser = localData.users.find((u) => u.username === savedUsername) || null;
-          setCurrentUser(foundUser);
-        }
-        if (localData.projects.length > 0) {
-          setSelectedProjectId(localData.projects[0].id);
-        }
+      .catch(() => {
+        // Local cache already hydrated
       })
       .finally(() => setIsLoadingWorkspace(false));
   }, []);
@@ -393,10 +541,12 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = initAuth(
       (user, token) => {
+        setFirebaseUid(user.uid);
         setGoogleUserEmail(user.email || 'Conectado con Google');
         if (token) setGoogleAccessToken(token);
       },
       () => {
+        setFirebaseUid(null);
         setGoogleUserEmail(null);
         setGoogleAccessToken(null);
       }
@@ -404,47 +554,244 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Persist workspace helper
-  const saveWorkspace = useCallback(async (updated: WorkspaceData) => {
-    setWorkspace(updated);
-    try {
-      localStorage.setItem(LOCAL_WORKSPACE_STORAGE_KEY, JSON.stringify(updated));
-    } catch {
-      // ignore storage quota warning
-    }
-    try {
-      await fetch('/api/workspace/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updated),
-      });
-    } catch (err) {
-      console.warn('Backend save warning (saved locally):', err);
-    }
-  }, []);
+  // Sync logged-in student profile to Firestore directory whenever Google is connected
+  useEffect(() => {
+    if (!firebaseUid || !currentUser) return;
+    const enrichedUser: StudentAccount = {
+      ...currentUser,
+      firebaseUid,
+    };
+    syncUserProfileToFirestore(enrichedUser);
 
-  // Current selected project
-  const activeProject = useMemo(() => {
-    if (!workspace || workspace.projects.length === 0) return null;
-    return (
-      workspace.projects.find((p) => p.id === selectedProjectId) || workspace.projects[0] || null
+    // Ensure local user record stores firebaseUid so invitations map cleanly
+    setWorkspace((prev) => {
+      const updatedUsers = mergeUsersByUsername(prev.users, [enrichedUser]);
+      const next = { ...prev, users: updatedUsers };
+      persistWorkspaceLocally(next);
+      return next;
+    });
+  }, [firebaseUid, currentUser?.username]);
+
+  // Real-time Firestore subscriptions (Users directory, Class projects for Explorar, Invitations)
+  useEffect(() => {
+    if (!firebaseUid) return;
+
+    const unsubUsers = subscribeToDirectoryUsers((cloudUsers) => {
+      setWorkspace((prev) => {
+        const next: WorkspaceData = {
+          ...prev,
+          users: mergeUsersByUsername(prev.users, cloudUsers),
+        };
+        persistWorkspaceLocally(next);
+        return next;
+      });
+    });
+
+    const unsubProjects = subscribeToClassProjects((cloudProjects) => {
+      setWorkspace((prev) => {
+        const next: WorkspaceData = {
+          ...prev,
+          projects: mergeById(prev.projects, cloudProjects),
+        };
+        persistWorkspaceLocally(next);
+        return next;
+      });
+    });
+
+    const unsubInvites = subscribeToUserInvitations(firebaseUid, (cloudInvites) => {
+      setWorkspace((prev) => {
+        const next: WorkspaceData = {
+          ...prev,
+          invitations: mergeById(prev.invitations, cloudInvites),
+        };
+        persistWorkspaceLocally(next);
+        return next;
+      });
+    });
+
+    return () => {
+      unsubUsers();
+      unsubProjects();
+      unsubInvites();
+    };
+  }, [firebaseUid]);
+
+  // Push any local projects created before Google sign-in up to Firestore once connected
+  useEffect(() => {
+    if (!firebaseUid || !currentUser) return;
+    const myLocalProjects = workspace.projects.filter(
+      (p) => p.ownerUsername.toLowerCase() === currentUser.username.toLowerCase()
     );
-  }, [workspace, selectedProjectId]);
+    myLocalProjects.forEach((proj) => {
+      const enriched: ProjectItem = {
+        ...proj,
+        ownerId: firebaseUid,
+        visibility: proj.visibility || 'class',
+        memberUids: Array.from(new Set([...(proj.memberUids || []), firebaseUid])),
+      };
+      syncProjectToFirestore(enriched, false).then(() => {
+        syncProjectWorkspaceStateToFirestore(proj.id, {
+          folders: workspace.folders.filter((f) => f.projectId === proj.id),
+          documents: workspace.documents.filter((d) => d.projectId === proj.id),
+          tasks: workspace.tasks.filter((t) => t.projectId === proj.id),
+          notices: workspace.notices.filter((n) => n.projectId === proj.id),
+          messages: workspace.messages.filter((m) => m.projectId === proj.id),
+        });
+      });
+    });
+    // Only trigger when firebaseUid connects for this user
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firebaseUid]);
+
+  // Persist workspace helper (LocalStorage + Firestore Project State + Dev Server)
+  const saveWorkspace = useCallback(
+    async (updated: WorkspaceData, syncedProjectId?: string) => {
+      const normalized = normalizeWorkspaceData(updated);
+      setWorkspace(normalized);
+      persistWorkspaceLocally(normalized);
+
+      const targetProjId = syncedProjectId || selectedProjectId;
+      if (auth.currentUser?.emailVerified && targetProjId) {
+        const targetProject = normalized.projects.find((p) => p.id === targetProjId);
+        if (targetProject) {
+          syncProjectWorkspaceStateToFirestore(targetProjId, {
+            folders: normalized.folders.filter((f) => f.projectId === targetProjId),
+            documents: normalized.documents.filter((d) => d.projectId === targetProjId),
+            tasks: normalized.tasks.filter((t) => t.projectId === targetProjId),
+            notices: normalized.notices.filter((n) => n.projectId === targetProjId),
+            messages: normalized.messages.filter((m) => m.projectId === targetProjId),
+          }).catch(() => {});
+        }
+      }
+
+      try {
+        await fetch('/api/workspace/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(normalized),
+        });
+      } catch {
+        // Already saved in localStorage and Firestore
+      }
+    },
+    [selectedProjectId]
+  );
+
+  // Check if user is an authorized member of a project
+  const isUserMemberOfProject = useCallback(
+    (project: ProjectItem | null, user: StudentAccount | null): boolean => {
+      if (!project || !user) return false;
+      if (unlockedProjectIds.includes(project.id)) return true;
+      const uname = user.username.toLowerCase().trim();
+      if (project.ownerUsername.toLowerCase().trim() === uname) return true;
+      if (project.authorizedUsernames.some((u) => u.toLowerCase().trim() === uname)) return true;
+      if (firebaseUid && project.memberUids?.includes(firebaseUid)) return true;
+      return false;
+    },
+    [unlockedProjectIds, firebaseUid]
+  );
 
   const isUserAuthorizedOnProject = useCallback(
     (project: ProjectItem | null, user: StudentAccount | null): boolean => {
       if (!project) return false;
       if (!project.hasPassword) return true;
-      if (unlockedProjectIds.includes(project.id)) return true;
-      if (!user) return false;
-      const uname = user.username.toLowerCase().trim();
-      return (
-        project.ownerUsername.toLowerCase().trim() === uname ||
-        project.authorizedUsernames.some((u) => u.toLowerCase().trim() === uname)
-      );
+      return isUserMemberOfProject(project, user);
     },
-    [unlockedProjectIds]
+    [isUserMemberOfProject]
   );
+
+  // Projects the current user belongs to ("Mis Proyectos")
+  const myProjects = useMemo(() => {
+    if (!workspace || !currentUser) return [];
+    return workspace.projects.filter((p) => isUserMemberOfProject(p, currentUser));
+  }, [workspace, currentUser, isUserMemberOfProject]);
+
+  // Current selected project (from user's projects or unlocked project)
+  const activeProject = useMemo(() => {
+    if (!workspace || workspace.projects.length === 0) return null;
+    const direct = workspace.projects.find((p) => p.id === selectedProjectId);
+    if (direct && isUserMemberOfProject(direct, currentUser)) return direct;
+    return myProjects[0] || null;
+  }, [workspace, selectedProjectId, myProjects, currentUser, isUserMemberOfProject]);
+
+  // Subscribe to real-time shared Firestore state of activeProject
+  useEffect(() => {
+    if (!firebaseUid || !activeProject?.id) return;
+    const pId = activeProject.id;
+    const unsub = subscribeToProjectWorkspaceState(pId, (cloudState) => {
+      setWorkspace((prev) => {
+        const next: WorkspaceData = {
+          ...prev,
+          folders: [
+            ...prev.folders.filter((f) => f.projectId !== pId),
+            ...mergeById(
+              prev.folders.filter((f) => f.projectId === pId),
+              cloudState.folders
+            ),
+          ],
+          documents: [
+            ...prev.documents.filter((d) => d.projectId !== pId),
+            ...mergeById(
+              prev.documents.filter((d) => d.projectId === pId),
+              cloudState.documents
+            ),
+          ],
+          tasks: [
+            ...prev.tasks.filter((t) => t.projectId !== pId),
+            ...mergeById(
+              prev.tasks.filter((t) => t.projectId === pId),
+              cloudState.tasks
+            ),
+          ],
+          notices: [
+            ...prev.notices.filter((n) => n.projectId !== pId),
+            ...mergeById(
+              prev.notices.filter((n) => n.projectId === pId),
+              cloudState.notices
+            ),
+          ],
+          messages: [
+            ...prev.messages.filter((m) => m.projectId !== pId),
+            ...mergeById(
+              prev.messages.filter((m) => m.projectId === pId),
+              cloudState.messages
+            ),
+          ],
+        };
+        persistWorkspaceLocally(next);
+        return next;
+      });
+    });
+    return () => unsub();
+  }, [firebaseUid, activeProject?.id]);
+
+  // Pending & All Invitations for current logged-in user
+  const myIncomingInvitations = useMemo(() => {
+    if (!currentUser || !workspace?.invitations) return [];
+    const uname = currentUser.username.toLowerCase().trim();
+    return workspace.invitations
+      .filter(
+        (inv) =>
+          inv.toUsername.toLowerCase().trim() === uname ||
+          (firebaseUid && inv.toUid === firebaseUid)
+      )
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [workspace?.invitations, currentUser, firebaseUid]);
+
+  const pendingInvitations = useMemo(
+    () => myIncomingInvitations.filter((inv) => inv.status === 'pending'),
+    [myIncomingInvitations]
+  );
+
+  // Trigger instant on-screen notification card whenever a new pending invitation arrives!
+  useEffect(() => {
+    if (!currentUser || pendingInvitations.length === 0) return;
+    const nextUnseen = pendingInvitations.find((inv) => !seenInviteIdsRef.current.has(inv.id));
+    if (nextUnseen) {
+      seenInviteIdsRef.current.add(nextUnseen.id);
+      setLiveInviteToast(nextUnseen);
+    }
+  }, [currentUser, pendingInvitations]);
 
   // Project-scoped entities
   const projectFolders = useMemo(
@@ -803,24 +1150,25 @@ export default function App() {
       }
       const newUser: StudentAccount = {
         id: `usr_${Date.now()}`,
+        firebaseUid: firebaseUid || undefined,
         username: cleanUsername,
         displayName: authDisplayName.trim() || cleanUsername,
         passwordHash: authPassword.trim(),
         role: authRole.trim() || 'Estudiante de Informática',
         createdAt: new Date().toISOString(),
       };
-      const updated = {
+      const updated: WorkspaceData = {
         ...currentWs,
-        users: [...currentWs.users, newUser],
+        users: mergeUsersByUsername(currentWs.users, [newUser]),
       };
       await saveWorkspace(updated);
+      if (firebaseUid) {
+        await syncUserProfileToFirestore(newUser);
+      }
       setCurrentUser(newUser);
       localStorage.setItem('chikihub_logged_user', newUser.username);
-      if (!selectedProjectId && updated.projects.length > 0) {
-        setSelectedProjectId(updated.projects[0].id);
-      }
       setAuthPassword('');
-      showToast(`Cuenta @${newUser.username} creada correctamente.`);
+      showToast(`Cuenta @${newUser.username} creada y guardada correctamente.`);
       maybeShowFirstTimeGooglePrompt(newUser.username);
     }
   };
@@ -828,14 +1176,50 @@ export default function App() {
   const handleLogoutStudent = () => {
     localStorage.removeItem('chikihub_logged_user');
     setCurrentUser(null);
+    setLiveInviteToast(null);
+    setShowNotificationsPanel(false);
+    seenInviteIdsRef.current.clear();
   };
 
-  // Select a project
-  const handleSelectProject = (project: ProjectItem) => {
-    if (isUserAuthorizedOnProject(project, currentUser)) {
+  // Join a project permanently (updates localStorage + Firestore)
+  const addCurrentUserToProject = async (project: ProjectItem) => {
+    if (!currentUser || !workspace) return;
+    const uname = currentUser.username.toLowerCase().trim();
+    const updatedAuthUsers = Array.from(
+      new Set([...project.authorizedUsernames.map((u) => u.toLowerCase().trim()), uname])
+    );
+    const updatedMemberUids = Array.from(
+      new Set([...(project.memberUids || []), ...(firebaseUid ? [firebaseUid] : [])])
+    );
+    const updatedProj: ProjectItem = {
+      ...project,
+      authorizedUsernames: updatedAuthUsers,
+      memberUids: updatedMemberUids,
+      updatedAt: new Date().toISOString(),
+    };
+    const updatedWorkspace: WorkspaceData = {
+      ...workspace,
+      projects: workspace.projects.map((p) => (p.id === project.id ? updatedProj : p)),
+    };
+    await saveWorkspace(updatedWorkspace, project.id);
+    if (firebaseUid) {
+      await joinProjectInFirestore(project, currentUser.username);
+    }
+    setUnlockedProjectIds((prev) => (prev.includes(project.id) ? prev : [...prev, project.id]));
+    setSelectedProjectId(project.id);
+    setCurrentFolderId('root');
+    setActiveSection('overview');
+  };
+
+  // Select a project or join from Explorar Proyectos
+  const handleSelectProject = async (project: ProjectItem) => {
+    if (isUserMemberOfProject(project, currentUser)) {
       setSelectedProjectId(project.id);
       setCurrentFolderId('root');
       setActiveSection('overview');
+    } else if (!project.hasPassword) {
+      await addCurrentUserToProject(project);
+      showToast(`Te has unido al proyecto abierto «${project.name}».`);
     } else {
       setPasswordPromptProject(project);
       setProjectPasswordInput('');
@@ -843,26 +1227,89 @@ export default function App() {
     }
   };
 
-  const handleUnlockProjectWithPassword = (e: React.FormEvent) => {
+  const handleUnlockProjectWithPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!passwordPromptProject) return;
     if (projectPasswordInput.trim() === passwordPromptProject.passwordHash) {
-      setUnlockedProjectIds((prev) => [...prev, passwordPromptProject.id]);
-      setSelectedProjectId(passwordPromptProject.id);
-      setCurrentFolderId('root');
+      const target = passwordPromptProject;
       setPasswordPromptProject(null);
-      setActiveSection('overview');
-      showToast(`Proyecto "${passwordPromptProject.name}" desbloqueado.`);
+      await addCurrentUserToProject(target);
+      showToast(`Te has unido a «${target.name}» con contraseña.`);
     } else {
       setProjectPasswordError('Contraseña del proyecto incorrecta.');
     }
   };
 
-  // Create or Update Project (Enforcing MAX_ACTIVE_PROJECTS = 5)
+  // Accept or Decline a Project Invitation Notification
+  const handleRespondInvitation = async (
+    invitation: ProjectInvitation,
+    decision: 'accepted' | 'declined'
+  ) => {
+    if (!workspace || !currentUser) return;
+    const nowIso = new Date().toISOString();
+    const updatedInvitations = workspace.invitations.map((inv) =>
+      inv.id === invitation.id ? { ...inv, status: decision, updatedAt: nowIso } : inv
+    );
+
+    let updatedProjects = workspace.projects;
+    const targetProject = workspace.projects.find((p) => p.id === invitation.projectId);
+
+    if (decision === 'accepted' && targetProject) {
+      const uname = currentUser.username.toLowerCase().trim();
+      const updatedProj: ProjectItem = {
+        ...targetProject,
+        authorizedUsernames: Array.from(
+          new Set([...targetProject.authorizedUsernames.map((u) => u.toLowerCase()), uname])
+        ),
+        memberUids: Array.from(
+          new Set([...(targetProject.memberUids || []), ...(firebaseUid ? [firebaseUid] : [])])
+        ),
+        updatedAt: nowIso,
+      };
+      updatedProjects = workspace.projects.map((p) =>
+        p.id === targetProject.id ? updatedProj : p
+      );
+      setUnlockedProjectIds((prev) =>
+        prev.includes(targetProject.id) ? prev : [...prev, targetProject.id]
+      );
+      setSelectedProjectId(targetProject.id);
+      setCurrentFolderId('root');
+      setActiveSection('overview');
+    }
+
+    const updatedWorkspace: WorkspaceData = {
+      ...workspace,
+      projects: updatedProjects,
+      invitations: updatedInvitations,
+    };
+
+    await saveWorkspace(updatedWorkspace, targetProject?.id);
+    if (firebaseUid) {
+      await respondToInvitationInFirestore(invitation.id, decision);
+      if (decision === 'accepted' && targetProject) {
+        await joinProjectInFirestore(targetProject, currentUser.username);
+      }
+    }
+
+    setLiveInviteToast((prev) => (prev?.id === invitation.id ? null : prev));
+    if (decision === 'accepted') {
+      showToast(`¡Invitación aceptada! Ya formas parte de «${invitation.projectName}».`);
+    } else {
+      showToast(`Has rechazado la invitación a «${invitation.projectName}».`);
+    }
+  };
+
+  // Create or Update Project (Enforcing MAX_ACTIVE_PROJECTS = 5 for user's owned projects)
   const openCreateProjectModal = () => {
-    if (workspace && workspace.projects.length >= MAX_ACTIVE_PROJECTS) {
+    const ownedCount = currentUser
+      ? workspace.projects.filter(
+          (p) => p.ownerUsername.toLowerCase() === currentUser.username.toLowerCase()
+        ).length
+      : workspace.projects.length;
+
+    if (ownedCount >= MAX_ACTIVE_PROJECTS) {
       showToast(
-        `Límite gratuito alcanzado (${MAX_ACTIVE_PROJECTS}/${MAX_ACTIVE_PROJECTS} proyectos activos). Elimina uno antiguo para crear otro.`
+        `Límite gratuito alcanzado (${MAX_ACTIVE_PROJECTS}/${MAX_ACTIVE_PROJECTS} proyectos propios). Elimina uno antiguo para crear otro.`
       );
       return;
     }
@@ -873,7 +1320,7 @@ export default function App() {
     setProjDueDate('2026-12-15');
     setProjHasPassword(true);
     setProjPassword('1234');
-    setProjAuthUsersInput(currentUser ? currentUser.username : '');
+    setSelectedInviteUsers([]);
     setShowProjectModal(true);
   };
 
@@ -886,52 +1333,31 @@ export default function App() {
     setProjDueDate(activeProject.dueDate.slice(0, 10));
     setProjHasPassword(activeProject.hasPassword);
     setProjPassword(activeProject.passwordHash);
-    setProjAuthUsersInput(activeProject.authorizedUsernames.join(', '));
+    setSelectedInviteUsers([]);
     setShowProjectModal(true);
   };
 
   const handleSaveProject = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!workspace || !projName.trim()) return;
-
-    if (!editingProject && workspace.projects.length >= MAX_ACTIVE_PROJECTS) {
-      showToast(`Máximo ${MAX_ACTIVE_PROJECTS} proyectos activos permitidos en el plan gratuito.`);
-      return;
-    }
-
-    const authorizedList = Array.from(
-      new Set(
-        projAuthUsersInput
-          .split(',')
-          .map((s) => s.trim().toLowerCase().replace(/^@/, ''))
-          .filter(Boolean)
-      )
-    );
-    if (currentUser && !authorizedList.includes(currentUser.username.toLowerCase())) {
-      authorizedList.unshift(currentUser.username.toLowerCase());
-    }
+    if (!workspace || !projName.trim() || !currentUser) return;
 
     const nowIso = new Date().toISOString();
+    let savedProject: ProjectItem;
+    let nextProjects: ProjectItem[];
 
     if (editingProject) {
-      const updatedProj: ProjectItem = {
+      savedProject = {
         ...editingProject,
         name: projName.trim(),
         subject: projSubject.trim() || 'Informática',
         description: projDesc.trim(),
         hasPassword: projHasPassword,
         passwordHash: projHasPassword ? projPassword.trim() || '1234' : '',
-        authorizedUsernames: authorizedList,
+        visibility: editingProject.visibility || 'class',
         dueDate: new Date(projDueDate || '2026-12-15').toISOString(),
         updatedAt: nowIso,
       };
-      const updatedWorkspace: WorkspaceData = {
-        ...workspace,
-        projects: workspace.projects.map((p) => (p.id === editingProject.id ? updatedProj : p)),
-      };
-      await saveWorkspace(updatedWorkspace);
-      await syncProjectToFirestore(updatedProj, false);
-      showToast(`Proyecto "${updatedProj.name}" actualizado.`);
+      nextProjects = workspace.projects.map((p) => (p.id === editingProject.id ? savedProject : p));
     } else {
       let driveFolderId = '';
       if (googleAccessToken) {
@@ -946,34 +1372,84 @@ export default function App() {
         }
       }
 
-      const newProj: ProjectItem = {
+      savedProject = {
         id: `proj_${Date.now()}`,
         name: projName.trim(),
         subject: projSubject.trim() || 'Informática',
         description: projDesc.trim(),
-        ownerId: currentUser?.id || 'usr_chiki',
-        ownerUsername: currentUser?.username || 'chiki',
+        ownerId: firebaseUid || currentUser.id,
+        ownerUsername: currentUser.username,
         hasPassword: projHasPassword,
         passwordHash: projHasPassword ? projPassword.trim() || '1234' : '',
-        authorizedUsernames: authorizedList,
+        authorizedUsernames: [currentUser.username.toLowerCase()],
+        memberUids: firebaseUid ? [firebaseUid] : [],
+        visibility: 'class',
         dueDate: new Date(projDueDate || '2026-12-15').toISOString(),
         driveFolderId,
         createdAt: nowIso,
         updatedAt: nowIso,
       };
+      nextProjects = [savedProject, ...workspace.projects];
+    }
 
-      const updatedWorkspace: WorkspaceData = {
-        ...workspace,
-        projects: [newProj, ...workspace.projects],
-      };
-      await saveWorkspace(updatedWorkspace);
-      await syncProjectToFirestore(newProj, true);
-      setSelectedProjectId(newProj.id);
+    // Build real ProjectInvitation notifications for every selected registered classmate
+    const createdInvitations: ProjectInvitation[] = [];
+    for (const invitedUser of selectedInviteUsers) {
+      const targetUname = invitedUser.username.toLowerCase().trim();
+      const alreadyPending = workspace.invitations.some(
+        (inv) =>
+          inv.projectId === savedProject.id &&
+          inv.toUsername.toLowerCase() === targetUname &&
+          inv.status === 'pending'
+      );
+      if (alreadyPending) continue;
+      createdInvitations.push({
+        id: `inv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        projectId: savedProject.id,
+        projectName: savedProject.name,
+        projectSubject: savedProject.subject,
+        fromUid: firebaseUid || currentUser.id,
+        fromUsername: currentUser.username,
+        toUid: invitedUser.firebaseUid || invitedUser.id,
+        toUsername: targetUname,
+        status: 'pending',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+    }
+
+    const updatedWorkspace: WorkspaceData = {
+      ...workspace,
+      projects: nextProjects,
+      invitations: [...createdInvitations, ...workspace.invitations],
+    };
+
+    await saveWorkspace(updatedWorkspace, savedProject.id);
+    await syncProjectToFirestore(savedProject, !editingProject);
+
+    // Send invitations to Firestore AFTER project doc exists in Firestore
+    for (const inv of createdInvitations) {
+      await createProjectInvitationInFirestore(inv);
+    }
+
+    if (!editingProject) {
+      setSelectedProjectId(savedProject.id);
       setCurrentFolderId('root');
+    }
+
+    if (createdInvitations.length > 0) {
+      const names = createdInvitations.map((i) => `@${i.toUsername}`).join(', ');
       showToast(
-        `Proyecto "${newProj.name}" creado (${updatedWorkspace.projects.length}/${MAX_ACTIVE_PROJECTS}).`
+        `${editingProject ? 'Proyecto guardado' : `Proyecto «${savedProject.name}» creado`} · Invitación enviada a ${names}.`
+      );
+    } else {
+      showToast(
+        editingProject
+          ? `Proyecto «${savedProject.name}» actualizado y guardado.`
+          : `Proyecto «${savedProject.name}» creado y guardado.`
       );
     }
+    setSelectedInviteUsers([]);
     setShowProjectModal(false);
   };
 
@@ -997,10 +1473,13 @@ export default function App() {
           tasks: workspace.tasks.filter((t) => t.projectId !== proj.id),
           notices: workspace.notices.filter((n) => n.projectId !== proj.id),
           messages: workspace.messages.filter((m) => m.projectId !== proj.id),
+          invitations: workspace.invitations.filter((inv) => inv.projectId !== proj.id),
         };
         await saveWorkspace(updatedWorkspace);
+        await deleteProjectFromFirestore(proj.id);
         if (selectedProjectId === proj.id) {
-          setSelectedProjectId(remainingProjects[0]?.id || '');
+          const nextOwned = remainingProjects.find((p) => isUserMemberOfProject(p, currentUser));
+          setSelectedProjectId(nextOwned?.id || '');
           setCurrentFolderId('root');
         }
         showToast(`Proyecto "${proj.name}" eliminado.`);
@@ -2345,7 +2824,7 @@ export default function App() {
     );
   };
 
-  // Navigation Tabs Config (Folio / ArtCraft numbered section tabs)
+  // Navigation Tabs Config (Folio / ArtCraft numbered section tabs including 07 · Explorar)
   const navSections: { id: BentoSectionTab; num: string; label: string; count?: string }[] = [
     { id: 'overview', num: '01', label: 'Resumen' },
     {
@@ -2370,10 +2849,34 @@ export default function App() {
     {
       id: 'projects',
       num: '06',
-      label: 'Proyectos y Drive',
-      count: `${workspace?.projects.length || 0}/${MAX_ACTIVE_PROJECTS}`,
+      label: 'Mis Proyectos',
+      count: `${myProjects.length}/${MAX_ACTIVE_PROJECTS}`,
+    },
+    {
+      id: 'explore',
+      num: '07',
+      label: 'Explorar',
+      count: `${workspace?.projects.length || 0}`,
     },
   ];
+
+  // Filtered list for Tab 07 · Explorar Proyectos
+  const exploredProjects = useMemo(() => {
+    const q = exploreSearchQuery.trim().toLowerCase();
+    return (workspace?.projects || []).filter((proj) => {
+      const isMember = isUserMemberOfProject(proj, currentUser);
+      if (exploreFilter === 'open' && proj.hasPassword) return false;
+      if (exploreFilter === 'protected' && !proj.hasPassword) return false;
+      if (exploreFilter === 'others' && isMember) return false;
+      if (!q) return true;
+      return (
+        proj.name.toLowerCase().includes(q) ||
+        proj.subject.toLowerCase().includes(q) ||
+        proj.description.toLowerCase().includes(q) ||
+        proj.ownerUsername.toLowerCase().includes(q)
+      );
+    });
+  }, [workspace?.projects, exploreSearchQuery, exploreFilter, isUserMemberOfProject, currentUser]);
 
   // 3. MAIN SPACIOUS MULTI-TAB BENTO WORKSPACE
   return (
@@ -2400,6 +2903,62 @@ export default function App() {
         className="hidden"
       />
 
+      {/* Instant On-Screen Floating Invitation Alert Card */}
+      {liveInviteToast && (
+        <div className="fixed top-20 right-5 z-50 w-[calc(100%-2.5rem)] max-w-sm border border-[#3B82F6] bg-[#0E0E14] shadow-2xl">
+          <div className="h-1 w-full bg-[#3B82F6]" />
+          <div className="p-4 space-y-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 border border-[#3B82F6]/50 bg-[#3B82F6]/15 flex items-center justify-center text-[#60A5FA] shrink-0">
+                  <Bell className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <span className="font-mono text-[10px] uppercase text-[#60A5FA] font-bold block">
+                    NUEVA INVITACIÓN DE PROYECTO
+                  </span>
+                  <p className="text-xs font-semibold text-white">
+                    @{liveInviteToast.fromUsername} te ha invitado
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLiveInviteToast(null)}
+                className="text-[#8E8E9E] hover:text-white cursor-pointer"
+                aria-label="Cerrar notificación"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-[#C4C4D0] leading-relaxed">
+              Te han invitado a colaborar en{' '}
+              <strong className="text-white">«{liveInviteToast.projectName}»</strong>
+              {liveInviteToast.projectSubject ? ` (${liveInviteToast.projectSubject})` : ''}.
+            </p>
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => handleRespondInvitation(liveInviteToast, 'accepted')}
+                className="h-9 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Aceptar</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleRespondInvitation(liveInviteToast, 'declined')}
+                className="h-9 border border-[#2E2E3A] bg-[#14141A] hover:border-rose-400 text-[#D4D4DC] hover:text-rose-300 font-semibold text-xs uppercase tracking-wider cursor-pointer"
+              >
+                Rechazar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast Notification */}
       {syncBannerMessage && (
         <div className="fixed bottom-5 right-5 z-50 max-w-sm border border-white bg-[#0E0E12] px-4 py-3 shadow-2xl flex items-center justify-between gap-3">
@@ -2415,7 +2974,7 @@ export default function App() {
       )}
 
       {/* ==================== TOP BAR CONTRACT (3 ZONES, 1 ROW, 1PX BORDER) ==================== */}
-      <header className="sticky top-0 z-30 flex items-center justify-between gap-8 px-6 py-4 border-b border-[#22222A] bg-[#09090B]/95">
+      <header className="sticky top-0 z-30 flex items-center justify-between gap-4 sm:gap-8 px-4 sm:px-6 py-4 border-b border-[#22222A] bg-[#09090B]/95">
         {/* Zone 1: Single text element wordmark */}
         <a
           href="#top"
@@ -2423,13 +2982,13 @@ export default function App() {
             e.preventDefault();
             setActiveSection('overview');
           }}
-          className="font-display text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0"
+          className="font-display text-sm sm:text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0"
         >
           Proyectos Nebrija App
         </a>
 
-        {/* Zone 2: 5 concise single-line text navigation links */}
-        <nav className="hidden lg:flex items-center gap-7 text-xs font-medium text-[#8E8E9E]">
+        {/* Zone 2: Concise single-line text navigation links */}
+        <nav className="hidden xl:flex items-center gap-6 text-xs font-medium text-[#8E8E9E]">
           {navSections.slice(0, 5).map((sec) => (
             <button
               key={sec.id}
@@ -2446,18 +3005,143 @@ export default function App() {
           ))}
         </nav>
 
-        {/* Zone 3: 1 primary action */}
-        <div className="flex items-center gap-3 shrink-0">
+        {/* Zone 3: Notification Bell + Primary Action */}
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0 relative">
+          {/* Notifications Bell Icon Button */}
+          <button
+            type="button"
+            onClick={() => setShowNotificationsPanel((prev) => !prev)}
+            title="Notificaciones e invitaciones"
+            className={`relative h-9 w-9 border flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
+              showNotificationsPanel
+                ? 'border-white bg-white text-[#09090B]'
+                : pendingInvitations.length > 0
+                  ? 'border-[#3B82F6] bg-[#3B82F6]/15 text-[#60A5FA] hover:border-white'
+                  : 'border-[#2A2A35] bg-[#121218] text-[#C4C4D0] hover:border-white hover:text-white'
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+            {pendingInvitations.length > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 bg-[#3B82F6] text-white font-mono text-[10px] font-bold flex items-center justify-center border border-[#09090B]">
+                {pendingInvitations.length}
+              </span>
+            )}
+          </button>
+
+          {/* Notifications Dropdown Panel */}
+          {showNotificationsPanel && (
+            <div className="absolute right-0 top-full mt-2 z-50 w-80 sm:w-96 border border-[#2E2E3A] bg-[#0E0E12] shadow-2xl">
+              <div className="px-4 py-3 border-b border-[#22222A] flex items-center justify-between">
+                <div>
+                  <span className="font-mono text-[10px] text-[#60A5FA] uppercase block">
+                    CENTRO DE NOTIFICACIONES
+                  </span>
+                  <h3 className="font-display font-bold text-xs text-white">
+                    Invitaciones a Proyectos ({pendingInvitations.length} pendientes)
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowNotificationsPanel(false)}
+                  className="p-1 text-[#8E8E9E] hover:text-white cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="max-h-96 overflow-y-auto divide-y divide-[#1D1D25]">
+                {myIncomingInvitations.length === 0 ? (
+                  <div className="p-6 text-center space-y-1.5">
+                    <Bell className="w-6 h-6 text-[#555566] mx-auto" />
+                    <p className="text-xs font-medium text-[#A1A1B2]">
+                      No tienes notificaciones todavía
+                    </p>
+                    <p className="text-[11px] text-[#7E7E8E]">
+                      Cuando un compañero te invite a su proyecto, aparecerá aquí y en pantalla al
+                      instante.
+                    </p>
+                  </div>
+                ) : (
+                  myIncomingInvitations.map((inv) => (
+                    <div key={inv.id} className="p-4 space-y-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-xs text-white leading-snug">
+                            <strong className="font-mono text-[#60A5FA]">@{inv.fromUsername}</strong>{' '}
+                            te ha invitado a{' '}
+                            <strong className="text-white">«{inv.projectName}»</strong>
+                          </p>
+                          <p className="font-mono text-[10px] text-[#7E7E8E] mt-0.5">
+                            {inv.projectSubject || 'Informática'} ·{' '}
+                            {new Date(inv.createdAt).toLocaleDateString('es-ES')}
+                          </p>
+                        </div>
+
+                        {inv.status !== 'pending' && (
+                          <span
+                            className={`px-2 py-0.5 font-mono text-[10px] uppercase border shrink-0 ${
+                              inv.status === 'accepted'
+                                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                                : 'border-[#2E2E3A] bg-[#14141A] text-[#8E8E9E]'
+                            }`}
+                          >
+                            {inv.status === 'accepted' ? 'Aceptada' : 'Rechazada'}
+                          </span>
+                        )}
+                      </div>
+
+                      {inv.status === 'pending' && (
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleRespondInvitation(inv, 'accepted');
+                              setShowNotificationsPanel(false);
+                            }}
+                            className="flex-1 h-8 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-[11px] uppercase tracking-wider inline-flex items-center justify-center gap-1 cursor-pointer"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Aceptar invitación</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRespondInvitation(inv, 'declined')}
+                            className="h-8 px-3 border border-[#2E2E3A] bg-[#14141A] hover:border-rose-400 text-[#C4C4D0] hover:text-rose-300 text-[11px] uppercase cursor-pointer"
+                          >
+                            Rechazar
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setActiveSection('explore')}
+            className={`hidden sm:inline-flex items-center gap-1.5 px-3.5 py-2 border text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeSection === 'explore'
+                ? 'border-[#3B82F6] bg-[#3B82F6]/20 text-white'
+                : 'border-[#2E2E3A] bg-[#14141A] hover:border-white text-white'
+            }`}
+          >
+            <Compass className="w-3.5 h-3.5 text-[#60A5FA]" />
+            <span>Explorar</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setActiveSection('projects')}
-            className={`px-4 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            className={`px-3.5 sm:px-4 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               activeSection === 'projects'
                 ? 'bg-[#3B82F6] text-white'
                 : 'bg-white hover:bg-zinc-200 text-[#09090B]'
             }`}
           >
-            Proyectos y Cuenta ({workspace?.projects.length || 0}/{MAX_ACTIVE_PROJECTS})
+            Mis Proyectos ({myProjects.length}/{MAX_ACTIVE_PROJECTS})
           </button>
         </div>
       </header>
@@ -2529,11 +3213,11 @@ export default function App() {
               </div>
               <div>
                 <p className="font-mono text-[11px] text-[#60A5FA] uppercase font-bold">
-                  CONEXIÓN GOOGLE RECOMENDADA
+                  CONEXIÓN GOOGLE RECOMENDADA (SINCRONIZACIÓN EN LA NUBE)
                 </p>
                 <p className="text-xs text-[#C4C4D0]">
-                  Inicia sesión con tu cuenta de Google para sincronizar archivos con Google Drive,
-                  abrir documentos Office en Google Docs y exportar versiones actualizadas.
+                  Inicia sesión con Google para sincronizar tus proyectos, invitaciones y archivos
+                  en tiempo real con tus compañeros y Google Drive.
                 </p>
               </div>
             </div>
@@ -2548,23 +3232,35 @@ export default function App() {
           </div>
         )}
 
-        {!activeProject && activeSection !== 'projects' ? (
-          <div className="border border-[#22222A] bg-[#0E0E12] p-12 text-center">
-            <Folder className="w-10 h-10 text-[#60A5FA] mx-auto mb-3" />
-            <h2 className="font-display text-xl font-bold text-white mb-2">
-              No hay ningún proyecto activo
-            </h2>
-            <p className="text-sm text-[#8E8E9E] mb-6 max-w-md mx-auto">
-              Crea el primer proyecto de informática del grupo (máximo {MAX_ACTIVE_PROJECTS}{' '}
-              proyectos activos 100% gratis).
-            </p>
-            <button
-              type="button"
-              onClick={openCreateProjectModal}
-              className="px-5 py-2.5 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider cursor-pointer"
-            >
-              + Crear Primer Proyecto
-            </button>
+        {!activeProject && activeSection !== 'projects' && activeSection !== 'explore' ? (
+          <div className="border border-[#22222A] bg-[#0E0E12] p-10 sm:p-12 text-center space-y-5">
+            <Folder className="w-10 h-10 text-[#60A5FA] mx-auto" />
+            <div>
+              <h2 className="font-display text-xl font-bold text-white mb-2">
+                Todavía no formas parte de ningún proyecto
+              </h2>
+              <p className="text-sm text-[#8E8E9E] max-w-md mx-auto">
+                Crea tu primer proyecto de informática (máximo {MAX_ACTIVE_PROJECTS} proyectos
+                gratis) o explora proyectos creados por tus compañeros para unirte.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={openCreateProjectModal}
+                className="px-5 py-2.5 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider cursor-pointer"
+              >
+                + Crear Primer Proyecto
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveSection('explore')}
+                className="px-5 py-2.5 border border-[#3B82F6] bg-[#3B82F6]/15 hover:bg-[#3B82F6]/25 text-[#60A5FA] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 cursor-pointer"
+              >
+                <Compass className="w-4 h-4" />
+                <span>Explorar Proyectos ({workspace?.projects.length || 0})</span>
+              </button>
+            </div>
           </div>
         ) : (
           <>
@@ -2582,14 +3278,24 @@ export default function App() {
                         <span className="font-mono text-xs uppercase text-[#60A5FA]">
                           01 · PROYECTO ACTIVO · {activeProject.subject}
                         </span>
-                        <button
-                          type="button"
-                          onClick={openEditProjectModal}
-                          className="px-3 py-1.5 border border-[#2A2A35] bg-[#14141A] hover:border-white text-xs text-[#D4D4DC] inline-flex items-center gap-1.5 cursor-pointer transition-colors"
-                        >
-                          <KeyRound className="w-3.5 h-3.5 text-[#60A5FA]" />
-                          <span>Configurar Proyecto</span>
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={openEditProjectModal}
+                            className="px-3 py-1.5 border border-[#3B82F6]/50 bg-[#3B82F6]/10 hover:bg-[#3B82F6]/20 text-xs text-[#60A5FA] inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                          >
+                            <UserPlus className="w-3.5 h-3.5" />
+                            <span>Invitar Compañeros</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={openEditProjectModal}
+                            className="px-3 py-1.5 border border-[#2A2A35] bg-[#14141A] hover:border-white text-xs text-[#D4D4DC] inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                          >
+                            <KeyRound className="w-3.5 h-3.5 text-[#60A5FA]" />
+                            <span>Configurar</span>
+                          </button>
+                        </div>
                       </div>
 
                       <h1 className="font-display text-3xl sm:text-4xl font-bold text-white tracking-tight mb-4">
@@ -3706,7 +4412,7 @@ export default function App() {
             )}
 
             {/* =====================================================================================
-                PESTAÑA 06 · PROYECTOS, GOOGLE DRIVE Y CUOTA GRATUITA (BENTO LAUNCHER)
+                PESTAÑA 06 · MIS PROYECTOS, GOOGLE DRIVE Y CUOTA GRATUITA (BENTO LAUNCHER)
                ===================================================================================== */}
             {activeSection === 'projects' && (
               <div className="space-y-8">
@@ -3714,94 +4420,111 @@ export default function App() {
                 <div className="border border-[#22222A] bg-[#0E0E12] p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div>
                     <span className="font-mono text-xs text-[#60A5FA] uppercase block mb-1">
-                      06 · LANZADOR DE PROYECTOS Y CONEXIÓN GOOGLE DRIVE
+                      06 · MIS PROYECTOS Y CONEXIÓN GOOGLE DRIVE
                     </span>
                     <h2 className="font-display text-2xl font-bold text-white">
-                      Proyectos Activos ({workspace?.projects.length || 0} / {MAX_ACTIVE_PROJECTS}{' '}
-                      Gratis)
+                      Mis Proyectos ({myProjects.length} / {MAX_ACTIVE_PROJECTS} Gratis)
                     </h2>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={openCreateProjectModal}
-                    disabled={(workspace?.projects.length || 0) >= MAX_ACTIVE_PROJECTS}
-                    className="h-10 px-5 bg-white hover:bg-zinc-200 disabled:opacity-40 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 cursor-pointer self-start sm:self-auto"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Crear Nuevo Proyecto</span>
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                    <button
+                      type="button"
+                      onClick={() => setActiveSection('explore')}
+                      className="h-10 px-4 border border-[#3B82F6] bg-[#3B82F6]/15 hover:bg-[#3B82F6]/25 text-[#60A5FA] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      <Compass className="w-4 h-4" />
+                      <span>Explorar Proyectos</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openCreateProjectModal}
+                      className="h-10 px-5 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Crear Nuevo Proyecto</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Projects Bento Grid (ArtCraft Launcher Style) */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-[#22222A] border border-[#22222A]">
-                  {workspace?.projects.map((proj, index) => {
-                    const isSelected = activeProject?.id === proj.id;
-                    const isAuthorized = isUserAuthorizedOnProject(proj, currentUser);
-                    return (
-                      <div
-                        key={proj.id}
-                        className="bg-[#0E0E12] p-6 flex flex-col justify-between gap-6"
-                      >
-                        <div>
-                          <div className="flex items-center justify-between text-xs font-mono pb-3 mb-4 border-b border-[#22222A]">
-                            <span className="text-[#60A5FA]">
-                              PROYECTO 0{index + 1} · @{proj.ownerUsername}
-                            </span>
-                            <span className="text-[#8E8E9E] tabular-nums">
-                              {new Date(proj.dueDate).toLocaleDateString('es-ES')}
-                            </span>
-                          </div>
-
-                          <div className="flex items-start justify-between gap-3 mb-3">
-                            <div>
-                              <h3 className="font-display font-bold text-lg text-white">
-                                {proj.name}
-                              </h3>
-                              <p className="font-mono text-xs text-[#8E8E9E] mt-0.5">
-                                {proj.subject}
-                              </p>
+                {myProjects.length === 0 ? (
+                  <div className="border border-[#22222A] bg-[#0E0E12] p-10 text-center space-y-4">
+                    <Folder className="w-9 h-9 text-[#60A5FA] mx-auto" />
+                    <p className="text-sm text-[#A1A1B2]">
+                      Aún no tienes proyectos en tu lista. Crea uno nuevo o únete a uno desde{' '}
+                      <strong className="text-white">07 · Explorar</strong>.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-[#22222A] border border-[#22222A]">
+                    {myProjects.map((proj, index) => {
+                      const isSelected = activeProject?.id === proj.id;
+                      const isOwner =
+                        proj.ownerUsername.toLowerCase() === currentUser.username.toLowerCase();
+                      return (
+                        <div
+                          key={proj.id}
+                          className="bg-[#0E0E12] p-6 flex flex-col justify-between gap-6"
+                        >
+                          <div>
+                            <div className="flex items-center justify-between text-xs font-mono pb-3 mb-4 border-b border-[#22222A]">
+                              <span className="text-[#60A5FA]">
+                                PROYECTO 0{index + 1} · @{proj.ownerUsername}
+                              </span>
+                              <span className="text-[#8E8E9E] tabular-nums">
+                                {new Date(proj.dueDate).toLocaleDateString('es-ES')}
+                              </span>
                             </div>
-                            {proj.hasPassword ? (
-                              isAuthorized ? (
+
+                            <div className="flex items-start justify-between gap-3 mb-3">
+                              <div>
+                                <h3 className="font-display font-bold text-lg text-white">
+                                  {proj.name}
+                                </h3>
+                                <p className="font-mono text-xs text-[#8E8E9E] mt-0.5">
+                                  {proj.subject} · {proj.authorizedUsernames.length} integrante(s)
+                                </p>
+                              </div>
+                              {proj.hasPassword ? (
                                 <Unlock className="w-4 h-4 text-emerald-400 shrink-0" />
-                              ) : (
-                                <Lock className="w-4 h-4 text-amber-400 shrink-0" />
-                              )
-                            ) : null}
+                              ) : null}
+                            </div>
+
+                            <p className="text-xs text-[#9E9EAE] leading-relaxed line-clamp-3">
+                              {proj.description}
+                            </p>
                           </div>
 
-                          <p className="text-xs text-[#9E9EAE] leading-relaxed line-clamp-3">
-                            {proj.description}
-                          </p>
-                        </div>
+                          <div className="flex items-center gap-2 pt-2">
+                            <button
+                              type="button"
+                              onClick={() => handleSelectProject(proj)}
+                              className={`flex-1 h-10 font-semibold text-xs uppercase tracking-wider cursor-pointer ${
+                                isSelected
+                                  ? 'bg-[#3B82F6] text-white'
+                                  : 'bg-white hover:bg-zinc-200 text-[#09090B]'
+                              }`}
+                            >
+                              {isSelected ? 'Proyecto Activo (Abrir)' : 'Seleccionar Proyecto'}
+                            </button>
 
-                        <div className="flex items-center gap-2 pt-2">
-                          <button
-                            type="button"
-                            onClick={() => handleSelectProject(proj)}
-                            className={`flex-1 h-10 font-semibold text-xs uppercase tracking-wider cursor-pointer ${
-                              isSelected
-                                ? 'bg-[#3B82F6] text-white'
-                                : 'bg-white hover:bg-zinc-200 text-[#09090B]'
-                            }`}
-                          >
-                            {isSelected ? 'Proyecto Activo (Abrir)' : 'Seleccionar Proyecto'}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteProject(proj)}
-                            title="Eliminar proyecto"
-                            className="h-10 w-10 border border-[#2A2A35] bg-[#14141A] hover:border-rose-500 text-[#7E7E8E] hover:text-rose-400 flex items-center justify-center cursor-pointer"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                            {isOwner && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteProject(proj)}
+                                title="Eliminar proyecto"
+                                className="h-10 w-10 border border-[#2A2A35] bg-[#14141A] hover:border-rose-500 text-[#7E7E8E] hover:text-rose-400 flex items-center justify-center cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {/* Bottom Row: Google Drive Integration + Free Storage Quota + Student Session */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-[#22222A] border border-[#22222A]">
@@ -3898,6 +4621,174 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* =====================================================================================
+                PESTAÑA 07 · EXPLORAR PROYECTOS (DIRECTORIO DE PROYECTOS DE LA CLASE + UNIRSE)
+               ===================================================================================== */}
+            {activeSection === 'explore' && (
+              <div className="space-y-6">
+                {/* Explore Header & Search Controls */}
+                <div className="border border-[#22222A] bg-[#0E0E12] p-5 sm:p-6 space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                    <div className="max-w-2xl">
+                      <span className="font-mono text-[11px] text-[#60A5FA] uppercase tracking-wider block mb-1.5">
+                        07 · DIRECTORIO COLABORATIVO DE LA CLASE
+                      </span>
+                      <h2 className="font-display text-2xl font-bold text-white">
+                        Explorar Proyectos
+                      </h2>
+                      <p className="text-xs sm:text-sm text-[#8E8E9E] mt-1.5 leading-relaxed">
+                        Descubre proyectos creados por otros estudiantes y únete directamente. Si un
+                        proyecto está protegido con contraseña, el sistema te la pedirá antes de
+                        darte acceso.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={openCreateProjectModal}
+                      className="h-10 px-5 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer self-start"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Crear Proyecto</span>
+                    </button>
+                  </div>
+
+                  <div className="pt-4 border-t border-[#1D1D25] flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div className="relative flex-1 max-w-md">
+                      <Search className="w-4 h-4 text-[#7E7E8E] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={exploreSearchQuery}
+                        onChange={(e) => setExploreSearchQuery(e.target.value)}
+                        placeholder="Buscar por nombre, asignatura o @creador..."
+                        className="w-full h-10 pl-10 pr-4 bg-[#09090B] border border-[#2A2A35] text-xs text-white focus:outline-none focus:border-white"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {(
+                        [
+                          { id: 'all', label: 'Todos' },
+                          { id: 'open', label: 'Abiertos' },
+                          { id: 'protected', label: 'Con Contraseña' },
+                          { id: 'others', label: 'De otros grupos' },
+                        ] as const
+                      ).map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          onClick={() => setExploreFilter(f.id)}
+                          className={`h-9 px-3.5 text-xs font-mono uppercase transition-colors cursor-pointer ${
+                            exploreFilter === f.id
+                              ? 'bg-white text-[#09090B] font-semibold'
+                              : 'border border-[#2A2A35] bg-[#14141A] text-[#A1A1B2] hover:text-white'
+                          }`}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Explored Projects Bento Grid */}
+                {exploredProjects.length === 0 ? (
+                  <div className="border border-[#22222A] bg-[#0E0E12] p-12 text-center space-y-3">
+                    <Compass className="w-9 h-9 text-[#555566] mx-auto" />
+                    <p className="text-sm font-medium text-white">
+                      No se encontraron proyectos con este filtro
+                    </p>
+                    <p className="text-xs text-[#8E8E9E] max-w-md mx-auto">
+                      {!googleUserEmail
+                        ? 'Inicia sesión con Google arriba para ver en tiempo real los proyectos creados por tus compañeros desde otros ordenadores.'
+                        : 'Prueba otra búsqueda o crea un nuevo proyecto para que aparezca aquí.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-[#22222A] border border-[#22222A]">
+                    {exploredProjects.map((proj) => {
+                      const isMember = isUserMemberOfProject(proj, currentUser);
+                      const isSelected = activeProject?.id === proj.id;
+                      return (
+                        <div
+                          key={proj.id}
+                          className="bg-[#0E0E12] p-6 flex flex-col justify-between gap-5"
+                        >
+                          <div>
+                            <div className="flex items-center justify-between gap-2 pb-3 mb-4 border-b border-[#22222A] font-mono text-[11px]">
+                              <span className="text-[#60A5FA] truncate">
+                                @{proj.ownerUsername}
+                              </span>
+                              {proj.hasPassword ? (
+                                <span className="inline-flex items-center gap-1 text-amber-400 shrink-0">
+                                  <Lock className="w-3 h-3" />
+                                  CON CONTRASEÑA
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-emerald-400 shrink-0">
+                                  <Unlock className="w-3 h-3" />
+                                  ABIERTO
+                                </span>
+                              )}
+                            </div>
+
+                            <h3 className="font-display font-bold text-lg text-white leading-snug mb-1">
+                              {proj.name}
+                            </h3>
+                            <p className="font-mono text-xs text-[#8E8E9E] mb-3">{proj.subject}</p>
+                            <p className="text-xs text-[#9E9EAE] leading-relaxed line-clamp-3">
+                              {proj.description || 'Proyecto colaborativo de informática.'}
+                            </p>
+                          </div>
+
+                          <div className="space-y-3 pt-2 border-t border-[#1D1D25]">
+                            <div className="flex items-center justify-between text-[11px] font-mono text-[#7E7E8E]">
+                              <span className="inline-flex items-center gap-1.5">
+                                <Users className="w-3.5 h-3.5 text-[#60A5FA]" />
+                                {proj.authorizedUsernames.length} miembro(s)
+                              </span>
+                              <span>
+                                Entrega: {new Date(proj.dueDate).toLocaleDateString('es-ES')}
+                              </span>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleSelectProject(proj)}
+                              className={`w-full h-10 font-semibold text-xs uppercase tracking-wider inline-flex items-center justify-center gap-2 cursor-pointer transition-colors ${
+                                isMember
+                                  ? isSelected
+                                    ? 'bg-[#3B82F6] text-white'
+                                    : 'border border-[#3B82F6] bg-[#3B82F6]/15 hover:bg-[#3B82F6]/25 text-[#60A5FA]'
+                                  : 'bg-white hover:bg-zinc-200 text-[#09090B]'
+                              }`}
+                            >
+                              {isMember ? (
+                                <>
+                                  <ArrowRight className="w-3.5 h-3.5" />
+                                  <span>{isSelected ? 'Proyecto Activo' : 'Abrir Proyecto'}</span>
+                                </>
+                              ) : proj.hasPassword ? (
+                                <>
+                                  <Lock className="w-3.5 h-3.5" />
+                                  <span>Unirse con Contraseña</span>
+                                </>
+                              ) : (
+                                <>
+                                  <UserPlus className="w-3.5 h-3.5" />
+                                  <span>Unirse al Proyecto</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </>
@@ -4258,18 +5149,35 @@ export default function App() {
                   className="w-full p-3 bg-[#09090B] border border-[#2A2A35] text-xs text-white"
                 />
               </div>
-              <div>
-                <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1">
-                  Usuarios autorizados (separados por comas)
-                </label>
-                <input
-                  type="text"
-                  value={projAuthUsersInput}
-                  onChange={(e) => setProjAuthUsersInput(e.target.value)}
-                  placeholder="chiki, alex, lucia, marcos"
-                  className="w-full h-10 px-3 bg-[#09090B] border border-[#2A2A35] text-xs text-white"
-                />
-              </div>
+              <UserInvitePicker
+                allUsers={workspace?.users || []}
+                currentUsername={currentUser.username}
+                existingMemberUsernames={
+                  editingProject ? editingProject.authorizedUsernames : [currentUser.username]
+                }
+                pendingInviteUsernames={
+                  editingProject
+                    ? (workspace?.invitations || [])
+                        .filter(
+                          (inv) => inv.projectId === editingProject.id && inv.status === 'pending'
+                        )
+                        .map((inv) => inv.toUsername)
+                    : []
+                }
+                selectedUsers={selectedInviteUsers}
+                onAddUser={(u) =>
+                  setSelectedInviteUsers((prev) =>
+                    prev.some((x) => x.username.toLowerCase() === u.username.toLowerCase())
+                      ? prev
+                      : [...prev, u]
+                  )
+                }
+                onRemoveUser={(uname) =>
+                  setSelectedInviteUsers((prev) =>
+                    prev.filter((x) => x.username.toLowerCase() !== uname.toLowerCase())
+                  )
+                }
+              />
               <div className="flex items-center justify-between pt-1">
                 <label className="text-xs text-[#C4C4D0] flex items-center gap-2">
                   <input

@@ -40,44 +40,101 @@ service cloud.firestore {
         get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
     }
 
-    // 1. UserProfile Blueprint
+    function isParentProjectMember(projectId) {
+      return exists(/databases/$(database)/documents/projects/$(projectId)) && (
+        get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid ||
+        request.auth.uid in get(/databases/$(database)/documents/projects/$(projectId)).data.memberUids
+      );
+    }
+
+    // 1. UserProfile Blueprint (Zero PII — Public Student Directory)
     function isValidUserProfile(data) {
-      return data.keys().hasAll(['uid', 'username', 'displayName', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['uid', 'username', 'displayName', 'createdAt', 'updatedAt']) &&
+      return data.keys().hasAll(['uid', 'username', 'displayName', 'role', 'searchable', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'username', 'displayName', 'role', 'searchable', 'createdAt', 'updatedAt']) &&
         data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
         data.uid == request.auth.uid &&
         data.username is string && data.username.size() >= 2 && data.username.size() <= 40 && data.username.matches('^[a-z0-9_.\\-]+$') &&
         data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        data.role is string && data.role.size() >= 1 && data.role.size() <= 80 &&
+        data.searchable is bool &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
 
-    // 2. Project Blueprint
+    // 2. Project Blueprint (Multi-member + Explorar Proyectos)
     function isValidProject(data) {
       return data.keys().hasAll([
           'id', 'name', 'subject', 'description', 'ownerId', 'ownerUsername',
-          'hasPassword', 'passwordHash', 'dueDate', 'driveFolderId', 'createdAt', 'updatedAt'
+          'hasPassword', 'passwordHash', 'visibility', 'authorizedUsernames', 'memberUids',
+          'dueDate', 'driveFolderId', 'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
           'id', 'name', 'subject', 'description', 'ownerId', 'ownerUsername',
-          'hasPassword', 'passwordHash', 'dueDate', 'driveFolderId', 'createdAt', 'updatedAt'
+          'hasPassword', 'passwordHash', 'visibility', 'authorizedUsernames', 'memberUids',
+          'dueDate', 'driveFolderId', 'createdAt', 'updatedAt'
         ]) &&
         data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
         data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 80 &&
         data.description is string && data.description.size() <= 1000 &&
         data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
-        data.ownerId == request.auth.uid &&
         data.ownerUsername is string && data.ownerUsername.size() >= 2 && data.ownerUsername.size() <= 40 &&
         data.hasPassword is bool &&
         data.passwordHash is string && data.passwordHash.size() <= 128 &&
+        data.visibility is string && data.visibility.size() >= 5 && data.visibility.size() <= 10 &&
+        (data.visibility == 'class' || data.visibility == 'private') &&
+        data.authorizedUsernames is list && data.authorizedUsernames.size() >= 1 && data.authorizedUsernames.size() <= 50 && data.authorizedUsernames[0] is string &&
+        data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 50 && data.memberUids[0] is string &&
         data.dueDate is string && data.dueDate.size() <= 40 &&
         data.driveFolderId is string && data.driveFolderId.size() <= 128 &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
 
-    // 3. ProjectMember Blueprint
+    // 3. ProjectWorkspaceState Blueprint (Shared Real-Time State Doc for Members)
+    function isValidProjectWorkspaceState(data) {
+      return data.keys().hasAll([
+          'projectId', 'updatedBy', 'folders', 'documents', 'tasks', 'notices', 'messages', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'projectId', 'updatedBy', 'folders', 'documents', 'tasks', 'notices', 'messages', 'updatedAt'
+        ]) &&
+        data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 && data.updatedBy.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.updatedBy == request.auth.uid &&
+        data.folders is list && data.folders.size() <= 200 &&
+        data.documents is list && data.documents.size() <= 200 &&
+        data.tasks is list && data.tasks.size() <= 200 &&
+        data.notices is list && data.notices.size() <= 200 &&
+        data.messages is list && data.messages.size() <= 300 &&
+        data.updatedAt is timestamp;
+    }
+
+    // 4. ProjectInvitation Blueprint (Real-Time Notification System)
+    function isValidProjectInvitation(data) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'projectName', 'projectSubject', 'fromUid', 'fromUsername',
+          'toUid', 'toUsername', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'projectId', 'projectName', 'projectSubject', 'fromUid', 'fromUsername',
+          'toUid', 'toUsername', 'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.projectName is string && data.projectName.size() >= 1 && data.projectName.size() <= 120 &&
+        data.projectSubject is string && data.projectSubject.size() <= 80 &&
+        data.fromUid is string && data.fromUid.size() >= 1 && data.fromUid.size() <= 128 && data.fromUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.fromUsername is string && data.fromUsername.size() >= 2 && data.fromUsername.size() <= 40 &&
+        data.toUid is string && data.toUid.size() >= 1 && data.toUid.size() <= 128 && data.toUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.toUsername is string && data.toUsername.size() >= 2 && data.toUsername.size() <= 40 &&
+        data.status is string && data.status.size() >= 7 && data.status.size() <= 10 &&
+        (data.status == 'pending' || data.status == 'accepted' || data.status == 'declined') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 5. ProjectMember Blueprint
     function isValidProjectMember(data) {
       return data.keys().hasAll(['id', 'projectId', 'ownerId', 'username', 'createdAt']) &&
         data.keys().hasOnly(['id', 'projectId', 'ownerId', 'username', 'createdAt']) &&
@@ -89,7 +146,7 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
-    // 4. Folder Blueprint
+    // 6. Folder Blueprint
     function isValidFolder(data) {
       return data.keys().hasAll(['id', 'projectId', 'ownerId', 'parentId', 'name', 'driveFolderId', 'createdBy', 'createdAt']) &&
         data.keys().hasOnly(['id', 'projectId', 'ownerId', 'parentId', 'name', 'driveFolderId', 'createdBy', 'createdAt']) &&
@@ -104,7 +161,7 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
-    // 5. ProjectDocument Blueprint
+    // 7. ProjectDocument Blueprint
     function isValidProjectDocument(data) {
       return data.keys().hasAll([
           'id', 'projectId', 'ownerId', 'folderId', 'title', 'content',
@@ -133,7 +190,7 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    // 6. ProjectTask Blueprint
+    // 8. ProjectTask Blueprint
     function isValidProjectTask(data) {
       return data.keys().hasAll([
           'id', 'projectId', 'ownerId', 'title', 'description', 'assigneeUsername',
@@ -157,7 +214,7 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    // 7. ProjectNotice Blueprint
+    // 9. ProjectNotice Blueprint
     function isValidProjectNotice(data) {
       return data.keys().hasAll([
           'id', 'projectId', 'ownerId', 'title', 'message',
@@ -182,7 +239,7 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    // 8. CodeSnippet Blueprint
+    // 10. CodeSnippet Blueprint
     function isValidCodeSnippet(data) {
       return data.keys().hasAll([
           'id', 'projectId', 'ownerId', 'folderId', 'title',
@@ -205,7 +262,7 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    // 9. ChatMessage Blueprint
+    // 11. ChatMessage Blueprint
     function isValidChatMessage(data) {
       return data.keys().hasAll(['id', 'projectId', 'ownerId', 'senderUsername', 'text', 'createdAt']) &&
         data.keys().hasOnly(['id', 'projectId', 'ownerId', 'senderUsername', 'text', 'createdAt']) &&
@@ -224,10 +281,10 @@ service cloud.firestore {
       allow list, create, update, delete: if false;
     }
 
-    // /users/{userId}
+    // /users/{userId} — Public non-PII student profiles for autocomplete discovery
     match /users/{userId} {
-      allow get: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
-      allow list: if isVerified() && (existing().uid == request.auth.uid || isAdmin());
+      allow get: if isVerified() && isValidId(userId) && (existing().searchable == true || request.auth.uid == userId || isAdmin());
+      allow list: if isVerified() && (existing().searchable == true || existing().uid == request.auth.uid || isAdmin());
       allow create: if isVerified() && isValidId(userId) &&
         isValidUserProfile(incoming()) &&
         incoming().uid == userId &&
@@ -239,18 +296,49 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
-          (request.auth.uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'username', 'updatedAt']))
+          (request.auth.uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'username', 'role', 'searchable', 'updatedAt']))
         );
       allow delete: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
     }
 
+    // /invitations/{invitationId} — Real-Time Project Invitations
+    match /invitations/{invitationId} {
+      allow get: if isVerified() && isValidId(invitationId) && (existing().toUid == request.auth.uid || existing().fromUid == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (existing().toUid == request.auth.uid || existing().fromUid == request.auth.uid || isAdmin());
+      allow create: if isVerified() && isValidId(invitationId) &&
+        isValidProjectInvitation(incoming()) &&
+        incoming().id == invitationId &&
+        incoming().fromUid == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isParentProjectMember(incoming().projectId);
+      allow update: if isVerified() && isValidId(invitationId) &&
+        isValidProjectInvitation(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().projectId == existing().projectId &&
+        incoming().fromUid == existing().fromUid &&
+        incoming().toUid == existing().toUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (existing().status == 'pending' &&
+            existing().toUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerified() && isValidId(invitationId) && (existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid || isAdmin());
+    }
+
     // /projects/{projectId}
     match /projects/{projectId} {
-      allow get: if isVerified() && isValidId(projectId) && (existing().ownerId == request.auth.uid || isAdmin());
-      allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow get: if isVerified() && isValidId(projectId) && (existing().visibility == 'class' || existing().ownerId == request.auth.uid || request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isVerified() && (existing().visibility == 'class' || existing().ownerId == request.auth.uid || request.auth.uid in existing().memberUids || isAdmin());
       allow create: if isVerified() && isValidId(projectId) &&
         isValidProject(incoming()) &&
         incoming().id == projectId &&
+        incoming().ownerId == request.auth.uid &&
+        request.auth.uid in incoming().memberUids &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
       allow update: if isVerified() && isValidId(projectId) &&
@@ -260,45 +348,79 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
+          // Action 1: Owner updates project configuration
           (existing().ownerId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'name', 'subject', 'description', 'hasPassword', 'passwordHash', 'dueDate', 'driveFolderId', 'updatedAt'
+              'name', 'subject', 'description', 'hasPassword', 'passwordHash', 'visibility',
+              'authorizedUsernames', 'memberUids', 'dueDate', 'driveFolderId', 'updatedAt'
+            ])
+          ) ||
+          // Action 2: Verified student joins an open/password-unlocked or invited project
+          (existing().visibility == 'class' &&
+            request.auth.uid in incoming().memberUids &&
+            incoming().memberUids.hasAll(existing().memberUids) &&
+            incoming().authorizedUsernames.hasAll(existing().authorizedUsernames) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'memberUids', 'authorizedUsernames', 'updatedAt'
             ])
           )
         );
       allow delete: if isVerified() && isValidId(projectId) && (existing().ownerId == request.auth.uid || isAdmin());
 
+      // /projects/{projectId}/state/{stateId} — Shared Workspace State Document (Master Gate)
+      match /state/{stateId} {
+        allow get: if isVerified() && isValidId(projectId) && isValidId(stateId) && (isParentProjectMember(projectId) || isAdmin());
+        allow list: if false;
+        allow create: if isVerified() && isValidId(projectId) && isValidId(stateId) &&
+          isValidProjectWorkspaceState(incoming()) &&
+          incoming().projectId == projectId &&
+          incoming().updatedAt == request.time &&
+          (isParentProjectMember(projectId) || isAdmin());
+        allow update: if isVerified() && isValidId(projectId) && isValidId(stateId) &&
+          isValidProjectWorkspaceState(incoming()) &&
+          incoming().projectId == existing().projectId &&
+          incoming().updatedAt == request.time && (
+            isAdmin() ||
+            (isParentProjectMember(projectId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'updatedBy', 'folders', 'documents', 'tasks', 'notices', 'messages', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(stateId) && (isParentProjectOwner(projectId) || isAdmin());
+      }
+
       // /projects/{projectId}/members/{memberId}
       match /members/{memberId} {
-        allow get: if isVerified() && isValidId(projectId) && isValidId(memberId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow get: if isVerified() && isValidId(projectId) && isValidId(memberId) && (isParentProjectMember(projectId) || isAdmin());
         allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
         allow create: if isVerified() && isValidId(projectId) && isValidId(memberId) &&
           isValidProjectMember(incoming()) &&
           incoming().id == memberId &&
           incoming().projectId == projectId &&
           incoming().createdAt == request.time &&
-          isParentProjectOwner(projectId);
+          isParentProjectMember(projectId);
         allow update: if false;
         allow delete: if isVerified() && isValidId(projectId) && isValidId(memberId) && (isParentProjectOwner(projectId) || isAdmin());
       }
 
       // /projects/{projectId}/folders/{folderId}
       match /folders/{folderId} {
-        allow get: if isVerified() && isValidId(projectId) && isValidId(folderId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow get: if isVerified() && isValidId(projectId) && isValidId(folderId) && (isParentProjectMember(projectId) || isAdmin());
         allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
         allow create: if isVerified() && isValidId(projectId) && isValidId(folderId) &&
           isValidFolder(incoming()) &&
           incoming().id == folderId &&
           incoming().projectId == projectId &&
           incoming().createdAt == request.time &&
-          isParentProjectOwner(projectId);
+          isParentProjectMember(projectId);
         allow update: if false;
-        allow delete: if isVerified() && isValidId(projectId) && isValidId(folderId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(folderId) && (isParentProjectMember(projectId) || isAdmin());
       }
 
       // /projects/{projectId}/documents/{documentId}
       match /documents/{documentId} {
-        allow get: if isVerified() && isValidId(projectId) && isValidId(documentId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow get: if isVerified() && isValidId(projectId) && isValidId(documentId) && (isParentProjectMember(projectId) || isAdmin());
         allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
         allow create: if isVerified() && isValidId(projectId) && isValidId(documentId) &&
           isValidProjectDocument(incoming()) &&
@@ -306,7 +428,7 @@ service cloud.firestore {
           incoming().projectId == projectId &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
-          isParentProjectOwner(projectId);
+          isParentProjectMember(projectId);
         allow update: if isVerified() && isValidId(projectId) && isValidId(documentId) &&
           isValidProjectDocument(incoming()) &&
           incoming().id == existing().id &&
@@ -315,19 +437,19 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time && (
             isAdmin() ||
-            (existing().status != 'completed' && isParentProjectOwner(projectId) &&
+            (existing().status != 'completed' && isParentProjectMember(projectId) &&
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'folderId', 'title', 'content', 'googleDocId', 'googleDocUrl',
                 'assigneeUsername', 'status', 'lastModifiedBy', 'updatedAt'
               ])
             )
           );
-        allow delete: if isVerified() && isValidId(projectId) && isValidId(documentId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(documentId) && (isParentProjectMember(projectId) || isAdmin());
       }
 
       // /projects/{projectId}/tasks/{taskId}
       match /tasks/{taskId} {
-        allow get: if isVerified() && isValidId(projectId) && isValidId(taskId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow get: if isVerified() && isValidId(projectId) && isValidId(taskId) && (isParentProjectMember(projectId) || isAdmin());
         allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
         allow create: if isVerified() && isValidId(projectId) && isValidId(taskId) &&
           isValidProjectTask(incoming()) &&
@@ -335,7 +457,7 @@ service cloud.firestore {
           incoming().projectId == projectId &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
-          isParentProjectOwner(projectId);
+          isParentProjectMember(projectId);
         allow update: if isVerified() && isValidId(projectId) && isValidId(taskId) &&
           isValidProjectTask(incoming()) &&
           incoming().id == existing().id &&
@@ -344,18 +466,18 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time && (
             isAdmin() ||
-            (existing().status != 'completed' && isParentProjectOwner(projectId) &&
+            (existing().status != 'completed' && isParentProjectMember(projectId) &&
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'title', 'description', 'assigneeUsername', 'dueDate', 'status', 'updatedAt'
               ])
             )
           );
-        allow delete: if isVerified() && isValidId(projectId) && isValidId(taskId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(taskId) && (isParentProjectMember(projectId) || isAdmin());
       }
 
       // /projects/{projectId}/notices/{noticeId}
       match /notices/{noticeId} {
-        allow get: if isVerified() && isValidId(projectId) && isValidId(noticeId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow get: if isVerified() && isValidId(projectId) && isValidId(noticeId) && (isParentProjectMember(projectId) || isAdmin());
         allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
         allow create: if isVerified() && isValidId(projectId) && isValidId(noticeId) &&
           isValidProjectNotice(incoming()) &&
@@ -363,7 +485,7 @@ service cloud.firestore {
           incoming().projectId == projectId &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
-          isParentProjectOwner(projectId);
+          isParentProjectMember(projectId);
         allow update: if isVerified() && isValidId(projectId) && isValidId(noticeId) &&
           isValidProjectNotice(incoming()) &&
           incoming().id == existing().id &&
@@ -372,18 +494,18 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time && (
             isAdmin() ||
-            (isParentProjectOwner(projectId) &&
+            (isParentProjectMember(projectId) &&
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'title', 'message', 'priority', 'archived', 'updatedAt'
               ])
             )
           );
-        allow delete: if isVerified() && isValidId(projectId) && isValidId(noticeId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(noticeId) && (isParentProjectMember(projectId) || isAdmin());
       }
 
       // /projects/{projectId}/snippets/{snippetId}
       match /snippets/{snippetId} {
-        allow get: if isVerified() && isValidId(projectId) && isValidId(snippetId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow get: if isVerified() && isValidId(projectId) && isValidId(snippetId) && (isParentProjectMember(projectId) || isAdmin());
         allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
         allow create: if isVerified() && isValidId(projectId) && isValidId(snippetId) &&
           isValidCodeSnippet(incoming()) &&
@@ -391,7 +513,7 @@ service cloud.firestore {
           incoming().projectId == projectId &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
-          isParentProjectOwner(projectId);
+          isParentProjectMember(projectId);
         allow update: if isVerified() && isValidId(projectId) && isValidId(snippetId) &&
           isValidCodeSnippet(incoming()) &&
           incoming().id == existing().id &&
@@ -400,27 +522,27 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time && (
             isAdmin() ||
-            (isParentProjectOwner(projectId) &&
+            (isParentProjectMember(projectId) &&
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'folderId', 'title', 'language', 'code', 'updatedAt'
               ])
             )
           );
-        allow delete: if isVerified() && isValidId(projectId) && isValidId(snippetId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(snippetId) && (isParentProjectMember(projectId) || isAdmin());
       }
 
       // /projects/{projectId}/messages/{messageId}
       match /messages/{messageId} {
-        allow get: if isVerified() && isValidId(projectId) && isValidId(messageId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow get: if isVerified() && isValidId(projectId) && isValidId(messageId) && (isParentProjectMember(projectId) || isAdmin());
         allow list: if isVerified() && (existing().ownerId == request.auth.uid || isAdmin());
         allow create: if isVerified() && isValidId(projectId) && isValidId(messageId) &&
           isValidChatMessage(incoming()) &&
           incoming().id == messageId &&
           incoming().projectId == projectId &&
           incoming().createdAt == request.time &&
-          isParentProjectOwner(projectId);
+          isParentProjectMember(projectId);
         allow update: if false;
-        allow delete: if isVerified() && isValidId(projectId) && isValidId(messageId) && (isParentProjectOwner(projectId) || isAdmin());
+        allow delete: if isVerified() && isValidId(projectId) && isValidId(messageId) && (isParentProjectMember(projectId) || isAdmin());
       }
     }
   }

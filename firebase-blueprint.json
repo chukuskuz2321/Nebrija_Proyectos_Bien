@@ -2,7 +2,7 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Public profile for a student user in the group workspace without PII.",
+      "description": "Public directory profile for a student user in the workspace without PII.",
       "type": "object",
       "properties": {
         "uid": {
@@ -14,7 +14,7 @@
         },
         "username": {
           "type": "string",
-          "description": "Unique lowercase username for classmate identification.",
+          "description": "Unique lowercase username for classmate discovery.",
           "minLength": 2,
           "maxLength": 40,
           "pattern": "^[a-z0-9_.\\-]+$"
@@ -24,6 +24,16 @@
           "description": "Visible display name of the student.",
           "minLength": 1,
           "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "description": "Student role or specialty.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "searchable": {
+          "type": "boolean",
+          "description": "Whether the student appears in classmate invitation autocomplete."
         },
         "createdAt": {
           "type": "string",
@@ -36,11 +46,11 @@
           "description": "Server update timestamp."
         }
       },
-      "required": ["uid", "username", "displayName", "createdAt", "updatedAt"]
+      "required": ["uid", "username", "displayName", "role", "searchable", "createdAt", "updatedAt"]
     },
     "Project": {
       "title": "Project",
-      "description": "Computer science school project container with optional password protection and Google Drive folder sync.",
+      "description": "Collaborative computer science project discoverable in Explorar Proyectos with optional password protection.",
       "type": "object",
       "properties": {
         "id": {
@@ -83,13 +93,28 @@
         },
         "hasPassword": {
           "type": "boolean",
-          "description": "Whether the project requires a password for non-whitelisted users."
+          "description": "Whether the project requires a password for non-members."
         },
         "passwordHash": {
           "type": "string",
-          "description": "Project access key or hash.",
+          "description": "Project access password.",
           "minLength": 0,
           "maxLength": 128
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Discovery scope for Explorar Proyectos.",
+          "enum": ["class", "private"],
+          "minLength": 5,
+          "maxLength": 10
+        },
+        "authorizedUsernames": {
+          "type": "array",
+          "description": "Bounded list of authorized member usernames (max 50)."
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Bounded list of authorized member Firebase Auth UIDs (max 50)."
         },
         "dueDate": {
           "type": "string",
@@ -123,8 +148,133 @@
         "ownerUsername",
         "hasPassword",
         "passwordHash",
+        "visibility",
+        "authorizedUsernames",
+        "memberUids",
         "dueDate",
         "driveFolderId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ProjectWorkspaceState": {
+      "title": "ProjectWorkspaceState",
+      "description": "Single-document synchronized state for project folders, documents metadata, tasks, notices, and team messages accessible to all current project members.",
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "folders": {
+          "type": "array",
+          "description": "Bounded list of project folders."
+        },
+        "documents": {
+          "type": "array",
+          "description": "Bounded list of project document entries."
+        },
+        "tasks": {
+          "type": "array",
+          "description": "Bounded list of project tasks."
+        },
+        "notices": {
+          "type": "array",
+          "description": "Bounded list of project notices."
+        },
+        "messages": {
+          "type": "array",
+          "description": "Bounded list of project chat messages."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["projectId", "updatedBy", "folders", "documents", "tasks", "notices", "messages", "updatedAt"]
+    },
+    "ProjectInvitation": {
+      "title": "ProjectInvitation",
+      "description": "Real-time project membership invitation notification sent from a project member to a registered student.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "projectSubject": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 80
+        },
+        "fromUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fromUsername": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "toUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "toUsername": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "accepted", "declined"],
+          "minLength": 7,
+          "maxLength": 10
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "projectName",
+        "projectSubject",
+        "fromUid",
+        "fromUsername",
+        "toUid",
+        "toUsername",
+        "status",
         "createdAt",
         "updatedAt"
       ]
@@ -134,39 +284,11 @@
       "description": "Authorized classmate username in a project subcollection.",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Member entry ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "projectId": {
-          "type": "string",
-          "description": "Parent project ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "ownerId": {
-          "type": "string",
-          "description": "Project owner UID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "username": {
-          "type": "string",
-          "description": "Authorized student username.",
-          "minLength": 2,
-          "maxLength": 40,
-          "pattern": "^[a-z0-9_.\\-]+$"
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server creation timestamp."
-        }
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "username": { "type": "string", "minLength": 2, "maxLength": 40, "pattern": "^[a-z0-9_.\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "projectId", "ownerId", "username", "createdAt"]
     },
@@ -175,454 +297,104 @@
       "description": "Folder or nested subfolder inside a project replicated in Google Drive.",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Folder ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "projectId": {
-          "type": "string",
-          "description": "Parent project ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "ownerId": {
-          "type": "string",
-          "description": "UID of the creator.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "parentId": {
-          "type": "string",
-          "description": "Parent folder ID or 'root'.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "name": {
-          "type": "string",
-          "description": "Folder display name.",
-          "minLength": 1,
-          "maxLength": 100
-        },
-        "driveFolderId": {
-          "type": "string",
-          "description": "Corresponding Google Drive folder ID.",
-          "minLength": 0,
-          "maxLength": 128
-        },
-        "createdBy": {
-          "type": "string",
-          "description": "Username of creator.",
-          "minLength": 2,
-          "maxLength": 40
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server creation timestamp."
-        }
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "parentId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "driveFolderId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "createdBy": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "projectId", "ownerId", "parentId", "name", "driveFolderId", "createdBy", "createdAt"]
     },
     "ProjectDocument": {
       "title": "ProjectDocument",
-      "description": "Collaborative document bidirectionally synchronized with Google Docs inside a project folder.",
+      "description": "Collaborative document synchronized with Google Docs inside a project folder.",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Document ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "projectId": {
-          "type": "string",
-          "description": "Parent project ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "ownerId": {
-          "type": "string",
-          "description": "UID of creator.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "folderId": {
-          "type": "string",
-          "description": "Containing folder ID or 'root'.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "title": {
-          "type": "string",
-          "description": "Document title.",
-          "minLength": 1,
-          "maxLength": 150
-        },
-        "content": {
-          "type": "string",
-          "description": "Synchronized document text/markdown content.",
-          "minLength": 0,
-          "maxLength": 50000
-        },
-        "googleDocId": {
-          "type": "string",
-          "description": "Real Google Docs document ID.",
-          "minLength": 0,
-          "maxLength": 128
-        },
-        "googleDocUrl": {
-          "type": "string",
-          "description": "Direct URL to open and co-edit in Google Docs.",
-          "minLength": 0,
-          "maxLength": 500
-        },
-        "assigneeUsername": {
-          "type": "string",
-          "description": "Assigned classmate username.",
-          "minLength": 0,
-          "maxLength": 40
-        },
-        "status": {
-          "type": "string",
-          "description": "Workflow status of the document.",
-          "enum": ["draft", "in_review", "completed"],
-          "minLength": 5,
-          "maxLength": 20
-        },
-        "lastModifiedBy": {
-          "type": "string",
-          "description": "Username of last editor.",
-          "minLength": 1,
-          "maxLength": 40
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server creation timestamp."
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server update timestamp."
-        }
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "folderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 150 },
+        "content": { "type": "string", "minLength": 0, "maxLength": 50000 },
+        "googleDocId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "googleDocUrl": { "type": "string", "minLength": 0, "maxLength": 500 },
+        "assigneeUsername": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "status": { "type": "string", "enum": ["draft", "in_review", "completed"], "minLength": 5, "maxLength": 20 },
+        "lastModifiedBy": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": [
-        "id",
-        "projectId",
-        "ownerId",
-        "folderId",
-        "title",
-        "content",
-        "googleDocId",
-        "googleDocUrl",
-        "assigneeUsername",
-        "status",
-        "lastModifiedBy",
-        "createdAt",
-        "updatedAt"
-      ]
+      "required": ["id", "projectId", "ownerId", "folderId", "title", "content", "googleDocId", "googleDocUrl", "assigneeUsername", "status", "lastModifiedBy", "createdAt", "updatedAt"]
     },
     "ProjectTask": {
       "title": "ProjectTask",
       "description": "Shared group task with title, description, authorized assignee, and 3-stage status.",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Task ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "projectId": {
-          "type": "string",
-          "description": "Parent project ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "ownerId": {
-          "type": "string",
-          "description": "UID of creator.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "title": {
-          "type": "string",
-          "description": "Task title.",
-          "minLength": 1,
-          "maxLength": 200
-        },
-        "description": {
-          "type": "string",
-          "description": "Detailed task instructions and acceptance criteria.",
-          "minLength": 0,
-          "maxLength": 1000
-        },
-        "assigneeUsername": {
-          "type": "string",
-          "description": "Authorized classmate username assigned to the task.",
-          "minLength": 0,
-          "maxLength": 40
-        },
-        "dueDate": {
-          "type": "string",
-          "description": "Optional due date string.",
-          "minLength": 0,
-          "maxLength": 40
-        },
-        "status": {
-          "type": "string",
-          "description": "Completion state of the task (pending, in_progress, completed).",
-          "enum": ["pending", "in_progress", "completed"],
-          "minLength": 7,
-          "maxLength": 15
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server creation timestamp."
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server update timestamp."
-        }
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "minLength": 0, "maxLength": 1000 },
+        "assigneeUsername": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "dueDate": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "status": { "type": "string", "enum": ["pending", "in_progress", "completed"], "minLength": 7, "maxLength": 15 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": [
-        "id",
-        "projectId",
-        "ownerId",
-        "title",
-        "description",
-        "assigneeUsername",
-        "dueDate",
-        "status",
-        "createdAt",
-        "updatedAt"
-      ]
+      "required": ["id", "projectId", "ownerId", "title", "description", "assigneeUsername", "dueDate", "status", "createdAt", "updatedAt"]
     },
     "ProjectNotice": {
       "title": "ProjectNotice",
-      "description": "Announcement on the project notice board with publication date and archive capability.",
+      "description": "Announcement on the project notice board.",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Notice ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "projectId": {
-          "type": "string",
-          "description": "Parent project ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "ownerId": {
-          "type": "string",
-          "description": "UID of author.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "title": {
-          "type": "string",
-          "description": "Notice headline.",
-          "minLength": 1,
-          "maxLength": 120
-        },
-        "message": {
-          "type": "string",
-          "description": "Notice body content.",
-          "minLength": 1,
-          "maxLength": 1000
-        },
-        "priority": {
-          "type": "string",
-          "description": "Urgency level.",
-          "enum": ["normal", "important", "urgent"],
-          "minLength": 6,
-          "maxLength": 12
-        },
-        "authorUsername": {
-          "type": "string",
-          "description": "Author username.",
-          "minLength": 2,
-          "maxLength": 40
-        },
-        "targetUsername": {
-          "type": "string",
-          "description": "Target classmate username or 'all'.",
-          "minLength": 2,
-          "maxLength": 40
-        },
-        "archived": {
-          "type": "boolean",
-          "description": "Whether the announcement has been archived."
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server publication timestamp."
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server update timestamp."
-        }
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "priority": { "type": "string", "enum": ["normal", "important", "urgent"], "minLength": 6, "maxLength": 12 },
+        "authorUsername": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "targetUsername": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "archived": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": [
-        "id",
-        "projectId",
-        "ownerId",
-        "title",
-        "message",
-        "priority",
-        "authorUsername",
-        "targetUsername",
-        "archived",
-        "createdAt",
-        "updatedAt"
-      ]
+      "required": ["id", "projectId", "ownerId", "title", "message", "priority", "authorUsername", "targetUsername", "archived", "createdAt", "updatedAt"]
     },
     "CodeSnippet": {
       "title": "CodeSnippet",
-      "description": "Shared source code snippet for computer science lab exercises.",
+      "description": "Shared source code snippet.",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Snippet ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "projectId": {
-          "type": "string",
-          "description": "Parent project ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "ownerId": {
-          "type": "string",
-          "description": "UID of author.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "folderId": {
-          "type": "string",
-          "description": "Folder ID or 'root'.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "title": {
-          "type": "string",
-          "description": "Snippet filename or title.",
-          "minLength": 1,
-          "maxLength": 120
-        },
-        "language": {
-          "type": "string",
-          "description": "Programming language.",
-          "minLength": 1,
-          "maxLength": 30
-        },
-        "code": {
-          "type": "string",
-          "description": "Code content.",
-          "minLength": 1,
-          "maxLength": 20000
-        },
-        "authorUsername": {
-          "type": "string",
-          "description": "Author username.",
-          "minLength": 2,
-          "maxLength": 40
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server creation timestamp."
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server update timestamp."
-        }
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "folderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "language": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "code": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "authorUsername": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": [
-        "id",
-        "projectId",
-        "ownerId",
-        "folderId",
-        "title",
-        "language",
-        "code",
-        "authorUsername",
-        "createdAt",
-        "updatedAt"
-      ]
+      "required": ["id", "projectId", "ownerId", "folderId", "title", "language", "code", "authorUsername", "createdAt", "updatedAt"]
     },
     "ChatMessage": {
       "title": "ChatMessage",
       "description": "Real-time message in the project team chat.",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Message ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "projectId": {
-          "type": "string",
-          "description": "Parent project ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "ownerId": {
-          "type": "string",
-          "description": "UID of sender.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "senderUsername": {
-          "type": "string",
-          "description": "Username of sender.",
-          "minLength": 2,
-          "maxLength": 40
-        },
-        "text": {
-          "type": "string",
-          "description": "Message body.",
-          "minLength": 1,
-          "maxLength": 1000
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server creation timestamp."
-        }
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderUsername": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "projectId", "ownerId", "senderUsername", "text", "createdAt"]
     }
@@ -630,11 +402,19 @@
   "firestore": {
     "/users/{userId}": {
       "schema": "UserProfile",
-      "description": "Public student user profiles indexed by Firebase UID."
+      "description": "Public student user profiles (no PII) indexed by Firebase UID for user autocomplete."
     },
     "/projects/{projectId}": {
       "schema": "Project",
-      "description": "Top-level group computer science projects."
+      "description": "Top-level group computer science projects discoverable in Explorar Proyectos."
+    },
+    "/projects/{projectId}/state/{stateId}": {
+      "schema": "ProjectWorkspaceState",
+      "description": "Real-time shared workspace state document for authorized project members."
+    },
+    "/invitations/{invitationId}": {
+      "schema": "ProjectInvitation",
+      "description": "Real-time project invitation notifications."
     },
     "/projects/{projectId}/members/{memberId}": {
       "schema": "ProjectMember",
