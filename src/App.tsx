@@ -38,6 +38,7 @@ import {
   Link2,
   ArrowRight,
   Layers,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   WorkspaceData,
@@ -78,6 +79,7 @@ import {
 } from './services/googleWorkspace';
 import { GoogleSignInButton } from './components/GoogleSignInButton';
 import { ChikiOnboardingModal } from './components/ChikiOnboardingModal';
+import { LegalPages } from './components/LegalPages';
 
 type BentoSectionTab = 'overview' | 'files' | 'tasks' | 'notices' | 'assistant' | 'projects';
 
@@ -189,10 +191,29 @@ export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceData>(() => getInitialLocalWorkspace());
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState<boolean>(true);
 
-  // First-time Chiki Onboarding Cards (6 Animated Bento Cards)
-  const [showOnboarding, setShowOnboarding] = useState<boolean>(() => {
-    return localStorage.getItem('chikihub_onboarding_seen_v3') !== 'true';
-  });
+  // Public SPA Routing for Google OAuth Brand Verification (/privacidad, /terminos)
+  const [currentPath, setCurrentPath] = useState<string>(() =>
+    typeof window !== 'undefined' ? window.location.pathname.toLowerCase() : '/'
+  );
+
+  const navigateTo = useCallback((path: string) => {
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', path);
+      setCurrentPath(path.toLowerCase());
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      setCurrentPath(window.location.pathname.toLowerCase());
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  // 6 Animated Bento Onboarding Cards (Never blocks public homepage for Google OAuth Verification)
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
 
   // Student Account Session
   const [currentUser, setCurrentUser] = useState<StudentAccount | null>(null);
@@ -1834,20 +1855,28 @@ export default function App() {
     return Math.max(0, Math.ceil((due - now) / (1000 * 60 * 60 * 24)));
   }, [activeProject]);
 
+  // PUBLIC LEGAL ROUTES (/privacidad, /privacy, /terminos, /terms) — Always accessible without login
+  if (currentPath === '/privacidad' || currentPath === '/privacy') {
+    return <LegalPages page="privacy" onNavigate={navigateTo} />;
+  }
+  if (currentPath === '/terminos' || currentPath === '/terms') {
+    return <LegalPages page="terms" onNavigate={navigateTo} />;
+  }
+
   if (isLoadingWorkspace) {
     return (
       <div className="min-h-screen bg-[#09090B] text-[#F4F4F6] flex items-center justify-center p-6">
         <div className="border border-[#24242E] bg-[#0E0E12] px-6 py-5 flex items-center gap-3">
           <RefreshCw className="w-4 h-4 text-[#3B82F6] animate-spin" />
           <span className="font-mono text-xs tracking-wider uppercase text-[#A1A1B2]">
-            Cargando entorno ChikiHub...
+            Cargando Proyectos Nebrija App...
           </span>
         </div>
       </div>
     );
   }
 
-  // 1. FIRST-TIME CHIKI ONBOARDING CARDS (6 ANIMATED BENTO CARDS)
+  // 1. INTERACTIVE 6-CARD ANIMATED BENTO TOUR (Triggered on click or post-registration)
   if (showOnboarding) {
     return (
       <ChikiOnboardingModal
@@ -1859,21 +1888,57 @@ export default function App() {
     );
   }
 
-  // 2. MANDATORY LOGIN / REGISTRATION SCREEN (ARCHITECTURAL 1PX BENTO SPLIT)
+  // 2. PUBLIC HOMEPAGE FOR "PROYECTOS NEBRIJA APP" (100% PUBLIC CONTENT + INTEGRATED ACCESS)
   if (!currentUser) {
     return (
       <div className="min-h-screen bento-grid-bg text-[#F4F4F6] flex flex-col justify-between">
-        {/* Top Bar Contract */}
-        <header className="flex items-center justify-between gap-8 px-6 py-4 border-b border-[#22222A] bg-[#09090B]">
-          <span className="font-display font-bold text-base tracking-tight text-white whitespace-nowrap shrink-0">
-            CHIKIHUB
-          </span>
-          <nav className="hidden md:flex items-center gap-6 text-xs font-medium text-[#8E8E9E]">
-            <span className="whitespace-nowrap shrink-0">01. Paquete Office & Google Docs</span>
-            <span className="whitespace-nowrap shrink-0">02. Extracción .ZIP</span>
-            <span className="whitespace-nowrap shrink-0">03. Cuota 50 MB Gratis</span>
-            <span className="whitespace-nowrap shrink-0">04. IA del Proyecto</span>
+        {/* Top Bar Contract (Exact Brand Match: Proyectos Nebrija App) */}
+        <header className="sticky top-0 z-30 flex items-center justify-between gap-6 px-6 py-4 border-b border-[#22222A] bg-[#09090B]/95">
+          <div className="flex items-center gap-3 shrink-0">
+            <a
+              href="/"
+              onClick={(e) => {
+                e.preventDefault();
+                navigateTo('/');
+              }}
+              className="font-display font-bold text-base tracking-tight text-white whitespace-nowrap"
+            >
+              Proyectos Nebrija App
+            </a>
+            <span className="hidden sm:inline font-mono text-[10px] text-[#60A5FA] border border-[#2A2A35] bg-[#121218] px-2 py-0.5">
+              CHIKIHUB
+            </span>
+          </div>
+
+          <nav className="hidden lg:flex items-center gap-6 text-xs font-medium text-[#8E8E9E]">
+            <a href="#funciones" className="hover:text-white transition-colors whitespace-nowrap">
+              Funciones
+            </a>
+            <a href="#google-workspace" className="hover:text-white transition-colors whitespace-nowrap">
+              Google Drive & Docs
+            </a>
+            <a
+              href="/privacidad"
+              onClick={(e) => {
+                e.preventDefault();
+                navigateTo('/privacidad');
+              }}
+              className="hover:text-white transition-colors whitespace-nowrap"
+            >
+              Política de Privacidad
+            </a>
+            <a
+              href="/terminos"
+              onClick={(e) => {
+                e.preventDefault();
+                navigateTo('/terminos');
+              }}
+              className="hover:text-white transition-colors whitespace-nowrap"
+            >
+              Términos de Servicio
+            </a>
           </nav>
+
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
@@ -1884,7 +1949,10 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => setAuthMode((m) => (m === 'login' ? 'register' : 'login'))}
+              onClick={() => {
+                setAuthMode((m) => (m === 'login' ? 'register' : 'login'));
+                document.getElementById('acceso-grupo')?.scrollIntoView({ behavior: 'smooth' });
+              }}
               className="px-4 py-2 text-xs font-semibold bg-white hover:bg-zinc-200 text-[#09090B] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               {authMode === 'login' ? 'Crear Cuenta' : 'Iniciar Sesión'}
@@ -1892,40 +1960,64 @@ export default function App() {
           </div>
         </header>
 
-        {/* Central 12-Column Exposed Hairline Bento Split */}
-        <main className="flex-1 flex items-center justify-center p-4 sm:p-8">
-          <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-px bg-[#22222A] border border-[#22222A]">
-            {/* Left Bento Column (7 cols) */}
+        {/* Public Informational Hero + Integrated Bento Access Grid */}
+        <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-8 py-8 sm:py-12 space-y-8">
+          <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-px bg-[#22222A] border border-[#22222A]">
+            {/* Left Bento Column (7 cols): Full Public App Information (Zero Login Wall) */}
             <div className="lg:col-span-7 bg-[#0E0E12] flex flex-col justify-between">
               <div className="p-6 sm:p-8 border-b border-[#22222A]">
                 <p className="font-mono text-xs text-[#60A5FA] mb-2">
-                  PLATAFORMA COLABORATIVA DE INFORMÁTICA
+                  PROYECTOS NEBRIJA APP · PLATAFORMA COLABORATIVA DE INFORMÁTICA
                 </p>
-                <h1 className="font-display text-2xl sm:text-4xl font-bold text-white tracking-tight mb-3">
-                  Gestión técnica de proyectos en equipo sin perder archivos.
+                <h1 className="font-display text-3xl sm:text-4xl font-bold text-white tracking-tight mb-3">
+                  Proyectos Nebrija App
                 </h1>
-                <p className="text-xs sm:text-sm text-[#8E8E9E] leading-relaxed max-w-xl">
-                  Sube cualquier archivo o carpeta completa desde distintos portátiles, abre hojas
-                  de cálculo y documentos de Office directamente en Google Docs / Sheets / Slides y
-                  extrae cualquier carpeta en <code className="text-white font-mono">.ZIP</code>.
+                <p className="text-sm text-[#B4B4C2] leading-relaxed mb-4">
+                  Espacio colaborativo gratuito creado para equipos de estudiantes de informática.
+                  Centraliza las carpetas del proyecto, vincula y edita documentos en{' '}
+                  <strong className="text-white">Google Docs, Google Sheets y Google Slides</strong>,
+                  organiza tareas por responsable y extrae cualquier carpeta completa en{' '}
+                  <code className="text-white font-mono">.ZIP</code> desde distintos portátiles.
                 </p>
+
+                <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowOnboarding(true)}
+                    className="h-10 px-4 border border-[#3B82F6] bg-[#3B82F6]/15 hover:bg-[#3B82F6]/25 text-[#60A5FA] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Ver Tour Interactivo (6 Tarjetas)</span>
+                  </button>
+                  <a
+                    href="/privacidad"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      navigateTo('/privacidad');
+                    }}
+                    className="h-10 px-4 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-xs text-[#D4D4DC] font-medium inline-flex items-center gap-2"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Política de Privacidad</span>
+                  </a>
+                </div>
               </div>
 
               {/* 2x2 Sub-Bento Capabilities Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-[#22222A]">
+              <div id="funciones" className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-[#22222A]">
                 <div className="p-6 bg-[#0E0E12]">
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-display font-semibold text-sm text-white">
-                      Compatibilidad Office Total
+                      Google Docs, Sheets y Slides
                     </span>
                     <FileSpreadsheet className="w-4 h-4 text-[#60A5FA]" />
                   </div>
                   <p className="text-xs text-[#8E8E9E] leading-relaxed">
-                    Soporte nativo para <code className="text-white">.DOCX</code>,{' '}
-                    <code className="text-white">.XLSX</code>,{' '}
-                    <code className="text-white">.PPTX</code>,{' '}
-                    <code className="text-white">.ODS</code> y <code className="text-white">.CSV</code>{' '}
-                    en editores de Google.
+                    Crea archivos compartidos pegando enlaces de Google o sube{' '}
+                    <code className="text-white">.DOCX</code>,{' '}
+                    <code className="text-white">.XLSX</code> y{' '}
+                    <code className="text-white">.PPTX</code> para abrirlos directamente en los
+                    editores de Google Workspace.
                   </p>
                 </div>
 
@@ -1937,8 +2029,8 @@ export default function App() {
                     <Download className="w-4 h-4 text-emerald-400" />
                   </div>
                   <p className="text-xs text-[#8E8E9E] leading-relaxed">
-                    Sube carpetas con subcarpetas anidadas y extrae cualquier directorio comprimido
-                    en un clic.
+                    Sube carpetas con subcarpetas anidadas (como prácticas de redes, scripts o
+                    memorias) y extrae cualquier directorio comprimido en <code className="text-white">.ZIP</code>.
                   </p>
                 </div>
 
@@ -1951,27 +2043,31 @@ export default function App() {
                   </div>
                   <p className="text-xs text-[#8E8E9E] leading-relaxed tabular-nums">
                     Hasta {MAX_ACTIVE_PROJECTS} proyectos activos y{' '}
-                    {formatBytes(MAX_PROJECT_STORAGE_BYTES)} por proyecto dentro del nivel gratuito.
+                    {formatBytes(MAX_PROJECT_STORAGE_BYTES)} por proyecto con acceso protegido para
+                    compañeros autorizados.
                   </p>
                 </div>
 
                 <div className="p-6 bg-[#0E0E12]">
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-display font-semibold text-sm text-white">
-                      IA Contextual + Tareas
+                      IA Contextual, Tareas y Avisos
                     </span>
                     <Sparkles className="w-4 h-4 text-white" />
                   </div>
                   <p className="text-xs text-[#8E8E9E] leading-relaxed">
-                    Asistente IA enfocado únicamente en vuestro proyecto, tablón de avisos y control
-                    de entregas.
+                    Panel de tareas con fecha de entrega, tablón de avisos del equipo y asistente IA
+                    exclusivo enfocado en el proyecto activo.
                   </p>
                 </div>
               </div>
             </div>
 
             {/* Right Bento Column (5 cols): Login / Create Account Form */}
-            <div className="lg:col-span-5 bg-[#0B0B0F] p-6 sm:p-8 flex flex-col justify-between">
+            <div
+              id="acceso-grupo"
+              className="lg:col-span-5 bg-[#0B0B0F] p-6 sm:p-8 flex flex-col justify-between"
+            >
               <div>
                 <div className="flex items-center justify-between pb-4 mb-6 border-b border-[#22222A]">
                   <div>
@@ -2100,7 +2196,112 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {/* Public Google Workspace & Data Transparency Bento Section (Required for OAuth Verification) */}
+          <section
+            id="google-workspace"
+            className="grid grid-cols-1 md:grid-cols-3 gap-px bg-[#22222A] border border-[#22222A]"
+          >
+            <div className="bg-[#0E0E12] p-6 space-y-2">
+              <span className="font-mono text-[11px] text-[#60A5FA] uppercase font-bold">
+                01 · USO DE GOOGLE DRIVE & DOCS
+              </span>
+              <h2 className="font-display font-bold text-base text-white">
+                Por qué solicitamos conexión con Google
+              </h2>
+              <p className="text-xs text-[#9E9EAE] leading-relaxed">
+                Proyectos Nebrija App conecta con tu cuenta de Google únicamente cuando tú lo
+                autorizas para crear carpetas del proyecto en Google Drive, abrir archivos Word,
+                Excel y PowerPoint en Google Docs/Sheets/Slides y descargar la última versión en{' '}
+                <code className="text-white">.ZIP</code>.
+              </p>
+            </div>
+
+            <div className="bg-[#0E0E12] p-6 space-y-2">
+              <span className="font-mono text-[11px] text-emerald-400 uppercase font-bold">
+                02 · PRIVACIDAD Y USO LIMITADO
+              </span>
+              <h2 className="font-display font-bold text-base text-white">
+                Tus archivos personales siguen privados
+              </h2>
+              <p className="text-xs text-[#9E9EAE] leading-relaxed">
+                La aplicación cumple con la Política de Datos de Usuario de las API de Google
+                (Limited Use). Solo accede a los documentos creados o vinculados dentro del proyecto,
+                nunca vende datos y permite revocar permisos en cualquier momento.
+              </p>
+            </div>
+
+            <div className="bg-[#0E0E12] p-6 flex flex-col justify-between gap-4">
+              <div className="space-y-2">
+                <span className="font-mono text-[11px] text-amber-400 uppercase font-bold">
+                  03 · DOCUMENTACIÓN LEGAL Y SOPORTE
+                </span>
+                <h2 className="font-display font-bold text-base text-white">
+                  Transparencia verificable
+                </h2>
+                <p className="text-xs text-[#9E9EAE] leading-relaxed">
+                  Consulta nuestra Política de Privacidad completa, los Términos de Servicio o
+                  contacta con el administrador en{' '}
+                  <span className="text-white font-mono">adrianbelvis14@gmail.com</span>.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href="/privacidad"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    navigateTo('/privacidad');
+                  }}
+                  className="px-3.5 py-2 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs"
+                >
+                  Leer Política de Privacidad
+                </a>
+                <a
+                  href="/terminos"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    navigateTo('/terminos');
+                  }}
+                  className="px-3.5 py-2 border border-[#2E2E3A] bg-[#14141A] hover:border-white text-xs text-white"
+                >
+                  Términos de Servicio
+                </a>
+              </div>
+            </div>
+          </section>
         </main>
+
+        {/* Public Footer with Exact App Name & Legal Links */}
+        <footer className="border-t border-[#22222A] bg-[#09090B] px-6 py-5">
+          <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-[#8E8E9E]">
+            <span>
+              © 2026 <strong className="text-white">Proyectos Nebrija App</strong> (ChikiHub) ·
+              Contacto: adrianbelvis14@gmail.com
+            </span>
+            <div className="flex items-center gap-5">
+              <a
+                href="/privacidad"
+                onClick={(e) => {
+                  e.preventDefault();
+                  navigateTo('/privacidad');
+                }}
+                className="hover:text-white underline transition-colors"
+              >
+                Política de Privacidad
+              </a>
+              <a
+                href="/terminos"
+                onClick={(e) => {
+                  e.preventDefault();
+                  navigateTo('/terminos');
+                }}
+                className="hover:text-white underline transition-colors"
+              >
+                Términos de Servicio
+              </a>
+            </div>
+          </div>
+        </footer>
       </div>
     );
   }
@@ -2214,7 +2415,7 @@ export default function App() {
           }}
           className="font-display text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0"
         >
-          CHIKIHUB
+          Proyectos Nebrija App
         </a>
 
         {/* Zone 2: 5 concise single-line text navigation links */}

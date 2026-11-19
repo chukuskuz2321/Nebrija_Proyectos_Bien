@@ -1,86 +1,152 @@
-# Documentación Completa de ChikiHub y Guía de Despliegue 100% Gratis en Vercel
+# Documentación Completa de Proyectos Nebrija App (ChikiHub) y Guía de Despliegue 100% Gratis en Vercel
 
-> **Creado por Chiki** — Plataforma colaborativa de proyectos de informática con sincronización con **Google Docs, Sheets, Slides y Google Drive**, subida y extracción de carpetas completas en `.ZIP`, gestión de tareas, tablón de anuncios e **IA exclusiva por proyecto**.
+> **Proyectos Nebrija App (ChikiHub)** — Plataforma colaborativa de proyectos universitarios de informática con enlace directo a **Google Docs, Sheets, Slides y Google Drive**, subida y extracción de carpetas completas en `.ZIP`, gestión de tareas, tablón de anuncios e **IA exclusiva por proyecto**.
 
 ---
 
-## IDENTIFICACIÓN DE TU PROYECTO EN FIREBASE (SEGÚN TU CAPTURA)
+## DATOS TÉCNICOS EXACTOS DE TU DESPLIEGUE
 
-En tu panel de [Firebase Console](https://console.firebase.google.com/), tienes 3 proyectos:
-1. `lucid-truth-hs7sz` *(Otro proyecto antiguo)*
-2. **`My First Project` (`nice-champion-472412-v5`)** ⬅️ **ESTE ES EL PROYECTO DE CHIKIHUB**
-3. `talleres-calypo` *(Tu web del colegio Calypo)*
-
-### Cómo cambiarle el nombre «My First Project» por «ChikiHub Informática» para no confundirlo nunca:
-1. Haz clic directamente en **`My First Project` (`nice-champion-472412-v5`)** o abre este enlace directo:
-   - [Abrir Configuración de ChikiHub en Firebase (`nice-champion-472412-v5`)](https://console.firebase.google.com/project/nice-champion-472412-v5/settings/general)
-2. En la pestaña **General** (arriba del todo, donde pone **Nombre del proyecto**: `My First Project`), haz clic en el icono del lápiz para editarlo.
-3. Escribe **`ChikiHub Proyectos Informática`** y dale a **Guardar**.
-4. ¡Listo! A partir de ese momento en tu lista de Firebase aparecerá como **ChikiHub Proyectos Informática** (`nice-champion-472412-v5`).
-
-**Datos técnicos exactos de este proyecto:**
-- **ID del Proyecto (Project ID)**: `nice-champion-472412-v5`
+- **URL de producción en Vercel**: `https://nebrija-proyectos-bien.vercel.app`
+- **Política de Privacidad pública**: `https://nebrija-proyectos-bien.vercel.app/privacidad`
+- **Términos de Servicio públicos**: `https://nebrija-proyectos-bien.vercel.app/terminos`
+- **Nombre de la App en Google Cloud (OAuth)**: `Proyectos Nebrija App`
+- **ID del Proyecto Firebase / Google Cloud**: `nice-champion-472412-v5`
 - **ID de la Base de Datos Firestore**: `ai-studio-9b3c9650-a1bc-4d40-8dab-5dff7d20cec2`
 - **Dominio de Auth**: `nice-champion-472412-v5.firebaseapp.com`
 
 ---
 
-## Parte 1: Manual de Uso de la Web (Paso a Paso)
+## Parte 1: Manual de Uso de la Web (Resumen Rápido)
 
-### 1. Cartas de Bienvenida («Creado por Chiki») e Inicio de Sesión Obligatorio
-- La primera vez que cualquier compañero abre la web en su portátil o móvil, aparecen las **3 cartas animadas de bienvenida de Chiki**.
-- Al mantener pulsado el botón circular verde de la última carta, la web lleva **obligatoriamente** a la pantalla de **Iniciar Sesión / Crear Cuenta**.
-- Nadie puede entrar a ver ni tocar los proyectos sin haber iniciado sesión antes con su `nombre de usuario` y `contraseña`.
+### 1. Página Principal Pública, Tour Interactivo (6 Tarjetas) y Registro Propio
+- La portada principal (`/`) es 100% pública (requisito obligatorio de Google OAuth), presenta las funciones de **Proyectos Nebrija App**, el uso transparente de Google Drive y enlaces directos a `/privacidad` y `/terminos`.
+- Incluye acceso al **Tour Interactivo de 6 Tarjetas** desde la barra superior y desde la portada.
+- **Sin cuentas de prueba**: cada alumno debe crear su propia cuenta (`nombre de usuario` + `contraseña`) y después vincular su cuenta de Google para abrir o subir documentos con Google Drive.
 
 ### 2. Protección de Proyectos y Usuarios Autorizados (Anti-Copia)
-- En la barra lateral izquierda puedes tener hasta **5 proyectos activos gratis** (`Proyectos: X/5`).
-- Cada proyecto tiene:
-  - **Lista de Usuarios Autorizados** (ej. `chiki, alex, lucia, marcos`): entran directamente al proyecto sin tener que escribir la contraseña.
-  - **Contraseña del Proyecto**: si alguien que no está en la lista intenta entrar al proyecto, se le bloquea el paso pidiéndole la contraseña.
+- Hasta **5 proyectos activos gratis** (`Máx. 50 MB / proyecto`) para mantenerse siempre en el plan gratuito de Firebase Firestore.
+- Cada proyecto tiene su **Lista de Usuarios Autorizados** y una **Contraseña del Proyecto** para bloquear el acceso a personas ajenas al grupo.
 
-### 3. Subir y Extraer Archivos y Carpetas + Apertura en Google Docs / Sheets / Slides
-- **Subir Archivos y Subir Carpeta**: Puedes subir cualquier archivo suelto o una carpeta entera de tu ordenador (respetando todas sus subcarpetas y archivos internos).
-- **Extensión visible y compatibilidad con el Paquete Office**:
-  - Cada archivo muestra su etiqueta de extensión (`.DOCX`, `.XLSX`, `.PPTX`, `.ODT`, `.ODS`, `.CSV`, `.PKT`, `.PDF`, `.ZIP`).
-  - Si el archivo pertenece al **Paquete Office / OpenDocument / Texto** (Word, Excel, PowerPoint, CSV, TXT), aparece el botón **«Abrir en Google Docs / Google Sheets / Google Slides»** para editarlo todos a la vez en tiempo real.
-  - Si el archivo tiene una extensión que **no se abre con ningún editor de Google** (como `.PKT` de Packet Tracer, `.ZIP`, `.ISO`, `.PDF`), la web indica que no tiene editor de Google y permite extraerlo directamente.
-- **Extraer Archivos y Carpetas (`.ZIP`)**:
-  - Pulsa **«Extraer»** en cualquier archivo para descargarlo con su extensión original (o con los últimos cambios hechos en Google Docs/Sheets/Slides).
-  - Pulsa **`.ZIP`** en cualquier carpeta o **«Extraer Carpeta Actual (.ZIP)»** arriba para descargar toda la carpeta con sus subcarpetas comprimida en un archivo `.zip`.
-
-### 4. Cuota de Almacenamiento 100% Gratis
-- La barra lateral izquierda incluye el medidor **Cuota Gratis Proyecto (`Máx. 50 MB / proy.`)**.
-- Con un máximo de 5 proyectos activos (`250 MB` en total), la web se mantiene siempre muy por debajo del límite gratuito de **1 GB de Firebase Firestore** y **15 GB de Google Drive** para que sea **100% gratis siempre**.
-
-### 5. Tareas del Grupo, Tablón de Anuncios e IA Exclusiva del Proyecto
-- **Cabecera con Fecha de Entrega y Progreso**: Arriba del todo se muestra en grande la **FECHA DE ENTREGA** (con cuenta atrás en días) y el **ESTADO DE TAREAS** completadas.
-- **Tareas**: Filtra por estado (`Pendientes`, `En Progreso`, `Completadas`) o por compañero responsable.
-- **Tablón de Anuncios**: Publica avisos con prioridad (*Normal*, *Importante*, *Urgente*), fecha de publicación y opción de **Archivar** anuncios antiguos.
-- **IA del Proyecto y Chat**: La IA conoce las carpetas, archivos, tareas y avisos del proyecto activo, y rechaza preguntas ajenas al trabajo (como recetas de cocina).
+### 3. Archivos, Carpetas `.ZIP` y Creación de Documentos mediante Enlace de Google Docs
+- **Crear Archivo (Google)**: dentro de la pestaña `02 · Archivos y Carpetas`, puedes crear un archivo pegando el **enlace de compartir** de Google Docs, Sheets o Slides (`docs.google.com/...`). Al hacer clic, cualquier compañero abre directamente ese documento compartido.
+- **Subir Archivos / Subir Carpeta y Extraer `.ZIP`**: admite archivos sueltos y carpetas completas con subcarpetas, respetando su estructura al extraer en `.ZIP`.
+- **Aviso automático de Google Sign-In**: la primera vez que entra un usuario (o si intenta una acción que requiere Google Drive sin haber vinculado Google), aparece una tarjeta guiándole para conectar su cuenta de Google en un clic.
 
 ---
 
-## Parte 2: Cómo Subir la Web a `vercel.app` y Base de Datos 100% GRATIS
+## Parte 2: Despliegue en Vercel y Sincronización con GitHub
 
-### Paso 1: Dejar la web limpia antes de subir (Opcional)
-- Cuando hayas terminado de probar los datos de ejemplo y quieras subirla vacía a Vercel, escribe en el chat de AI Studio **`limpio para subir`** para borrar todos los proyectos y usuarios de prueba.
+### Paso 1: Sincronización AI Studio ➔ GitHub ➔ Vercel
+1. Cuando haces cambios en AI Studio, pulsa **Guardar / Sync en GitHub** (icono de GitHub en AI Studio) para subir el commit a tu repositorio conectado.
+2. En cuanto GitHub recibe el commit, **Vercel detecta el cambio automáticamente y hace el redeploy solo** en ~40 segundos (no hace falta crear un proyecto nuevo ni reconfigurar nada).
 
-### Paso 2: Subir el código a GitHub (Gratis)
-1. Crea un repositorio en [github.com](https://github.com) llamado **`chikihub-proyectos-informatica`**.
-2. Descarga o exporta el código de AI Studio y súbelo a ese repositorio.
+### Paso 2: Variables de Entorno en Vercel
+En tu proyecto de [vercel.com](https://vercel.com) ➔ **Settings** ➔ **Environment Variables**, asegúrate de tener:
+- `GEMINI_API_KEY`: tu clave gratuita de [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
 
 ### Paso 3: Autorizar tu dominio de Vercel en Firebase (`nice-champion-472412-v5`)
-1. Entra en tu proyecto de Firebase **`My First Project` (`nice-champion-472412-v5`)**:
-   - [Abrir Authentication > Settings > Authorized domains](https://console.firebase.google.com/project/nice-champion-472412-v5/authentication/settings)
-2. En **Dominios autorizados (Authorized domains)**, pulsa **Añadir dominio** y escribe el dominio que te dé Vercel (por ejemplo `chikihub-proyectos-informatica.vercel.app`).
-3. Para que cualquier compañero del grupo pueda conectar su cuenta Gmail sin que le salga el aviso `Error 403: access_denied`, abre:
-   - [Google Cloud Console > OAuth Consent Screen (Audience) de `nice-champion-472412-v5`](https://console.cloud.google.com/apis/credentials/consent?project=nice-champion-472412-v5)
-   - Pulsa **«PUBLICAR APLICACIÓN» (Publish App)** (es 100% gratis) o añade los correos Gmail de tus compañeros en **«Usuarios de prueba» (Test users)**.
+1. Abre [Firebase Console ➔ Authentication ➔ Settings ➔ Authorized domains](https://console.firebase.google.com/project/nice-champion-472412-v5/authentication/settings).
+2. En **Dominios autorizados**, comprueba que esté añadido exactamente:
+   - `nebrija-proyectos-bien.vercel.app`
 
-### Paso 4: Desplegar en Vercel (`vercel.app`) en 2 minutos
-1. Entra en [vercel.com](https://vercel.com) con tu cuenta de GitHub y pulsa **Add New... ➔ Project**.
-2. Importa tu repositorio **`chikihub-proyectos-informatica`**.
-3. En **Environment Variables** (Variables de entorno), añade:
-   - Nombre: `GEMINI_API_KEY`
-   - Valor: Tu clave gratuita de [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-4. Pulsa **Deploy**. El archivo `vercel.json` incluido configurará automáticamente el frontend de Vite y las rutas `/api/*`.
+---
+
+## Parte 3 (NUEVO): Paso a Paso para que Google apruebe la Verificación de Marca (OAuth)
+
+Si Google Cloud te mostró la pantalla **«Problemas con la verificación de la marca»** con los 4 avisos sobre `https://nebrija-proyectos-bien.vercel.app`, aquí tienes exactamente qué se ha corregido ya en el código de la web y qué pasos debes hacer tú en Google Search Console y Google Cloud para que te la aprueben.
+
+### ¿Qué hemos corregido YA automáticamente en el código de la web?
+De los 4 errores que te marcó Google en la captura, **3 ya están arreglados en la web** en cuanto sincronices con GitHub y Vercel termine el deploy:
+
+- ✅ **Error 2 («La página de tu política de privacidad no tiene suficiente contenido»)**:
+  Se ha creado una página dedicada y completa en **`https://nebrija-proyectos-bien.vercel.app/privacidad`** (y Términos en **`/terminos`**) accesible sin iniciar sesión, detallando datos recopilados, uso de Google Drive/Docs, cumplimiento de la *Google API Services User Data Policy (Limited Use)*, revocación de permisos y contacto.
+- ✅ **Error 3 («Tu página principal está protegida por una página de acceso»)**:
+  La raíz **`https://nebrija-proyectos-bien.vercel.app`** ya NO bloquea la entrada con un muro de login ni un modal a pantalla completa. Ahora es una portada pública con toda la información de **Proyectos Nebrija App**, sus funciones y transparencia de datos de Google, con el formulario de acceso integrado sin bloquear el contenido.
+- ✅ **Error 4 («El nombre de la app "Proyectos Nebrija App" no coincide con la página principal»)**:
+  Se ha unificado el nombre exacto **`Proyectos Nebrija App`** en el `<title>` de `index.html`, el encabezado principal, el titular `<h1>`, el pie de página y la Política de Privacidad.
+
+---
+
+### ⚡ OPCIÓN RÁPIDA (30 segundos) para poder iniciar sesión HOY MISMO sin esperar a Google
+
+Mientras Google revisa y aprueba la verificación oficial (que tarda varios días), **tú y tus compañeros de clase podéis iniciar sesión hoy mismo** usando el modo de pruebas:
+
+1. Entra en [Google Cloud Console ➔ Google Auth Platform ➔ Público (Audience)](https://console.cloud.google.com/auth/audience?project=nice-champion-472412-v5).
+2. Si el estado de publicación está en **En producción**, haz clic en **Volver a la fase de pruebas** (*Back to testing*).
+3. En la sección **Usuarios de prueba (Test users)**, pulsa **+ Añadir usuarios (+ Add users)** y pega los correos Gmail de tus compañeros de clase (puedes añadir hasta **100 correos Gmail** gratis).
+4. Pulsa **Guardar**.
+5. Listo: todos esos correos podrán iniciar sesión con Google en `https://nebrija-proyectos-bien.vercel.app` al instante (si aparece una pantalla de aviso de app en prueba, solo tienen que pulsar **Continuar**).
+
+---
+
+### 🏆 GUÍA OFICIAL PASO A PASO: Cómo conseguir la Verificación Definitiva de Google (para que entre cualquier correo Gmail del mundo)
+
+Sigue estos **5 pasos en orden exacto** para resolver el **Error 1** y enviar la nueva verificación a Google:
+
+#### Paso A: Sincroniza los cambios nuevos a GitHub y comprueba las URLs en Vercel
+1. Desde AI Studio, guarda/sube los cambios actuales a tu repositorio de GitHub.
+2. Espera ~1 minuto a que Vercel termine el despliegue automático.
+3. Abre en una ventana de incógnito (sin sesión iniciada) estas 3 direcciones y comprueba que cargan bien:
+   - `https://nebrija-proyectos-bien.vercel.app` ➔ Debe verse la portada pública con el título **Proyectos Nebrija App**.
+   - `https://nebrija-proyectos-bien.vercel.app/privacidad` ➔ Debe verse la Política de Privacidad completa.
+   - `https://nebrija-proyectos-bien.vercel.app/terminos` ➔ Deben verse los Términos de Servicio.
+
+#### Paso B: Verifica la propiedad de `https://nebrija-proyectos-bien.vercel.app` en Google Search Console (Soluciona el Error 1)
+> **IMPORTANTE**: Debes hacer este paso con la **MISMA cuenta de Google** (`adrianbelvis14@gmail.com`) con la que administras tu proyecto de Google Cloud `nice-champion-472412-v5`.
+
+1. Abre [Google Search Console](https://search.google.com/search-console/welcome).
+2. Selecciona la tarjeta de la derecha: **Prefijo de la URL (URL prefix)** (NO uses "Dominio", porque `vercel.app` requiere "Prefijo de la URL").
+3. Escribe exactamente:
+   ```text
+   https://nebrija-proyectos-bien.vercel.app
+   ```
+   y pulsa **Continuar**.
+4. En la ventana de métodos de verificación, despliega **Etiqueta HTML (HTML tag)**.
+5. Copia la línea `<meta name="google-site-verification" content="..." />` que te da Google.
+6. **Pega esa etiqueta en `/index.html`** justo donde está el comentario `GOOGLE SEARCH CONSOLE VERIFICATION` (puedes pegármela aquí en el chat de AI Studio y yo la inserto al instante).
+7. Sube ese cambio a GitHub y espera ~1 minuto a que Vercel despliegue.
+8. Vuelve a Google Search Console y pulsa **Verificar**. Te saldrá un mensaje verde: **«Propiedad verificada»**.
+
+#### Paso C: Actualiza las URLs de la Marca en Google Cloud Console
+1. Abre [Google Cloud Console ➔ Google Auth Platform ➔ Desarrollo de la marca (Branding)](https://console.cloud.google.com/auth/branding?project=nice-champion-472412-v5).
+2. Rellena los campos con estos valores exactos (sin espacios extra):
+   - **Nombre de la aplicación**: `Proyectos Nebrija App`
+   - **Correo electrónico de asistencia al usuario**: `adrianbelvis14@gmail.com`
+   - **Página principal de la aplicación**:
+     ```text
+     https://nebrija-proyectos-bien.vercel.app
+     ```
+   - **Vínculo a la política de privacidad de la aplicación**:
+     ```text
+     https://nebrija-proyectos-bien.vercel.app/privacidad
+     ```
+   - **Vínculo a las condiciones del servicio de la aplicación**:
+     ```text
+     https://nebrija-proyectos-bien.vercel.app/terminos
+     ```
+3. En **Dominios autorizados (Authorized domains)**, asegúrate de tener añadido:
+   ```text
+   vercel.app
+   ```
+4. En **Información de contacto del desarrollador**, añade tu correo `adrianbelvis14@gmail.com`.
+5. Pulsa **Guardar**.
+
+#### Paso D: Espera 24 horas (Requisito obligatorio de Google)
+- Como indica el propio aviso de Google en tu captura, después de verificar la propiedad en **Google Search Console** debes **esperar 24 horas** para que los sistemas de Google Cloud sincronicen que `https://nebrija-proyectos-bien.vercel.app` te pertenece. Si lo envías antes de 24 horas, el sistema automático puede volver a rechazar el punto 1.
+
+#### Paso E: Envía la nueva verificación en Google Cloud
+1. Pasadas las 24 horas, vuelve a [Google Cloud Console ➔ Google Auth Platform ➔ Centro de verificación (Verification Center)](https://console.cloud.google.com/auth/verification?project=nice-champion-472412-v5).
+2. Abre el aviso de **Problemas con la verificación de la marca**.
+3. Marca la opción:
+   - 🔘 **Corregí los problemas** *(Solicita la nueva verificación de tu marca)*
+4. Pulsa **Continuar** y confirma el envío.
+5. Google revisará automáticamente las 4 condiciones (propiedad en Search Console, política en `/privacidad`, portada pública en `/` y nombre coincidente `Proyectos Nebrija App`) y te enviará la confirmación por correo a `adrianbelvis14@gmail.com`.
+
+> **Nota sobre permisos (Scopes) de Google Drive**: Si además de iniciar sesión con Google (nombre y correo) solicitas el permiso de `Google Drive (drive.file)`, Google puede pedir en una segunda fase un breve vídeo de demostración de 1-2 minutos en YouTube (en modo *Oculto/Unlisted*) enseñando cómo el usuario pulsa "Conectar Google" y abre/guarda un archivo. Si quieres evitar la revisión de permisos sensibles de Drive mientras tanto, usar la **Opción Rápida (Usuarios de prueba)** funciona al 100% con Drive incluido para hasta 100 compañeros.
+
+### ¿Por qué aparece `nice-champion-472412-v5.firebaseapp.com` en vez de `Proyectos Nebrija App` al iniciar sesión?
+1. **Regla de seguridad de Google OAuth (motivo principal):** Mientras la app está **en fase de pruebas** o **sin la verificación de marca aprobada**, Google oculta a propósito el nombre personalizado (`Proyectos Nebrija App`) y muestra el dominio técnico de Firebase (`nice-champion-472412-v5.firebaseapp.com`) para evitar suplantaciones. **En cuanto Google apruebe la Verificación de Marca (Paso E)**, Google sustituirá automáticamente `nice-champion-472412-v5.firebaseapp.com` por **`Proyectos Nebrija App`** (y tu logotipo si subes uno en *Desarrollo de la marca*).
+2. **Nombre visible al público en Firebase (recomendado también):**
+   - Entra en [Firebase Console ➔ Configuración del proyecto ➔ General](https://console.firebase.google.com/project/nice-champion-472412-v5/settings/general).
+   - Busca el campo **Nombre visible al público (Public-facing name)**, haz clic en el lápiz, escribe **`Proyectos Nebrija App`** y guarda.
+
