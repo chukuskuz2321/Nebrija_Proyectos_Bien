@@ -128,6 +128,12 @@
           "minLength": 0,
           "maxLength": 128
         },
+        "githubUrl": {
+          "type": "string",
+          "description": "Optional public GitHub repository URL for read-only commits and branches widget.",
+          "minLength": 0,
+          "maxLength": 300
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -194,12 +200,62 @@
           "type": "array",
           "description": "Bounded list of project chat messages."
         },
+        "activities": {
+          "type": "array",
+          "description": "Bounded audit log array of the last 30 project events stored inside the existing state document."
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time"
         }
       },
       "required": ["projectId", "updatedBy", "folders", "documents", "tasks", "notices", "messages", "updatedAt"]
+    },
+    "TeacherShowcase": {
+      "title": "TeacherShowcase",
+      "description": "Public read-only presentation projection for ?modo=profesor without PII, passwords, internal notices, or team chat.",
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "minLength": 0, "maxLength": 1000 },
+        "ownerUsername": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "authorizedUsernames": { "type": "array", "description": "Bounded list of team member usernames (max 50)." },
+        "dueDate": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "githubUrl": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "folders": { "type": "array", "description": "Bounded list of project folders (max 200)." },
+        "documents": { "type": "array", "description": "Bounded list of final project files (max 200)." },
+        "tasks": { "type": "array", "description": "Bounded list of tasks for participation stats & burndown (max 200)." },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "name", "subject", "description", "ownerUsername", "authorizedUsernames", "dueDate", "githubUrl", "folders", "documents", "tasks", "updatedAt"]
+    },
+    "UserNotification": {
+      "title": "UserNotification",
+      "description": "Real-time in-app notification for task assignment and @username mentions in project notice boards.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "toUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "toUsername": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "fromUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fromUsername": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "kind": { "type": "string", "enum": ["task_assigned", "mention", "deadline_48h"], "minLength": 7, "maxLength": 20 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "targetSection": { "type": "string", "enum": ["overview", "files", "tasks", "notices", "stats"], "minLength": 5, "maxLength": 12 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "toUid", "toUsername", "fromUid", "fromUsername", "projectId", "projectName", "kind", "title", "message", "targetSection", "read", "createdAt"]
     },
     "ProjectInvitation": {
       "title": "ProjectInvitation",
@@ -412,9 +468,17 @@
       "schema": "ProjectWorkspaceState",
       "description": "Real-time shared workspace state document for authorized project members."
     },
+    "/projects/{projectId}/showcase/{showcaseId}": {
+      "schema": "TeacherShowcase",
+      "description": "Public read-only presentation document for ?modo=profesor (direct get only, no list)."
+    },
     "/invitations/{invitationId}": {
       "schema": "ProjectInvitation",
       "description": "Real-time project invitation notifications."
+    },
+    "/notifications/{notificationId}": {
+      "schema": "UserNotification",
+      "description": "Real-time in-app notifications for task assignments and @username mentions."
     },
     "/projects/{projectId}/members/{memberId}": {
       "schema": "ProjectMember",

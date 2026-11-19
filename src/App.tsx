@@ -46,6 +46,11 @@ import {
   Clock,
   Zap,
   UserMinus,
+  Eye,
+  History,
+  Copy,
+  FileCode2,
+  GitBranch,
 } from 'lucide-react';
 import {
   WorkspaceData,
@@ -57,6 +62,10 @@ import {
   TaskItem,
   NoticeItem,
   ChatMessageItem,
+  ActivityLogItem,
+  ActivityActionKind,
+  InAppNotificationItem,
+  TeacherShowcaseData,
   TaskStatus,
   NoticePriority,
   MAX_ACTIVE_PROJECTS,
@@ -75,6 +84,7 @@ import {
   subscribeToDirectoryUsers,
   subscribeToClassProjects,
   syncProjectToFirestore,
+  updateProjectGithubUrlInFirestore,
   joinProjectInFirestore,
   removeMemberFromProjectInFirestore,
   deleteProjectFromFirestore,
@@ -85,6 +95,11 @@ import {
   createProjectInvitationInFirestore,
   respondToInvitationInFirestore,
   subscribeToUserInvitations,
+  syncProjectShowcaseToFirestore,
+  getPublicProjectShowcaseFromFirestore,
+  createInAppNotificationInFirestore,
+  markInAppNotificationReadInFirestore,
+  subscribeToInAppNotifications,
   syncFolderToFirestore,
   syncDocumentToFirestore,
   syncTaskToFirestore,
@@ -107,6 +122,16 @@ import { GoogleSignInButton } from './components/GoogleSignInButton';
 import { ChikiOnboardingModal } from './components/ChikiOnboardingModal';
 import { LegalPages } from './components/LegalPages';
 import { UserInvitePicker } from './components/UserInvitePicker';
+import { ActivityLogDrawer } from './components/ActivityLogDrawer';
+import { ProjectStatsTab } from './components/ProjectStatsTab';
+import {
+  CodeMarkdownViewerModal,
+  canOpenInBuiltInViewer,
+  isZipArchiveFile,
+} from './components/CodeMarkdownViewerModal';
+import { GitHubRepoWidget } from './components/GitHubRepoWidget';
+import { NotificationsBellPanel } from './components/NotificationsBellPanel';
+import { TeacherModeView } from './components/TeacherModeView';
 
 type BentoSectionTab =
   | 'overview'
@@ -114,6 +139,7 @@ type BentoSectionTab =
   | 'tasks'
   | 'notices'
   | 'assistant'
+  | 'stats'
   | 'projects'
   | 'explore';
 
@@ -136,7 +162,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-// Helper to read text preview from text-compatible files for AI context
+// Helper to read text content from code/markdown/text files for built-in viewer & AI context
 function readFileTextSnippet(file: File, ext: string): Promise<string> {
   const textExts = new Set([
     'txt',
@@ -147,20 +173,22 @@ function readFileTextSnippet(file: File, ext: string): Promise<string> {
     'py',
     'sh',
     'js',
+    'jsx',
     'ts',
+    'tsx',
     'html',
     'css',
     'yaml',
     'yml',
   ]);
-  if (!textExts.has(ext) || file.size > 150 * 1024) {
+  if (!textExts.has(ext) || file.size > 300 * 1024) {
     return Promise.resolve(
       `Archivo .${ext.toUpperCase()} (${formatBytes(file.size)}) subido al proyecto.`
     );
   }
   return new Promise((resolve) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || '').slice(0, 4000));
+    reader.onload = () => resolve(String(reader.result || '').slice(0, 12000));
     reader.onerror = () => resolve(`Archivo .${ext.toUpperCase()}`);
     reader.readAsText(file);
   });
@@ -320,6 +348,9 @@ export default function App() {
   useEffect(() => {
     const onPopState = () => {
       setCurrentPath(window.location.pathname.toLowerCase());
+      const params = new URLSearchParams(window.location.search);
+      setIsTeacherMode(params.get('modo') === 'profesor');
+      setTeacherUrlProjectId(params.get('proyecto') || '');
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -393,6 +424,34 @@ export default function App() {
   const [showNotificationsPanel, setShowNotificationsPanel] = useState<boolean>(false);
   const [liveInviteToast, setLiveInviteToast] = useState<ProjectInvitation | null>(null);
   const seenInviteIdsRef = useRef<Set<string>>(new Set());
+  const [cloudNotifications, setCloudNotifications] = useState<InAppNotificationItem[]>([]);
+  const [readDeadlineIds, setReadDeadlineIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('chikihub_read_deadlines_v1');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Modular Enhancement States: Teacher Mode (?modo=profesor), Activity Drawer, Code/MD Viewer
+  const [isTeacherMode, setIsTeacherMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('modo') === 'profesor';
+  });
+  const [teacherUrlProjectId, setTeacherUrlProjectId] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    const params = new URLSearchParams(window.location.search);
+    return params.get('proyecto') || '';
+  });
+  const [publicShowcase, setPublicShowcase] = useState<TeacherShowcaseData | null>(null);
+  const [isLoadingPublicShowcase, setIsLoadingPublicShowcase] = useState<boolean>(false);
+  const [publicShowcaseNotFound, setPublicShowcaseNotFound] = useState<boolean>(false);
+  const [copiedTeacherLink, setCopiedTeacherLink] = useState<boolean>(false);
+  const [showActivityDrawer, setShowActivityDrawer] = useState<boolean>(false);
+  const [viewerDocItem, setViewerDocItem] = useState<DocumentItem | null>(null);
 
   // Explore Projects Search & Filter
   const [exploreSearchQuery, setExploreSearchQuery] = useState<string>('');
@@ -400,7 +459,7 @@ export default function App() {
     'all'
   );
 
-  // Spacious Multi-Section Navigation (7 Dedicated Bento Tabs)
+  // Spacious Multi-Section Navigation (8 Dedicated Bento Tabs)
   const [activeSection, setActiveSection] = useState<BentoSectionTab>('overview');
   const [currentFolderId, setCurrentFolderId] = useState<string>('root');
 
@@ -424,6 +483,7 @@ export default function App() {
   const [projSubject, setProjSubject] = useState<string>('');
   const [projDesc, setProjDesc] = useState<string>('');
   const [projDueDate, setProjDueDate] = useState<string>('2026-12-15');
+  const [projGithubUrl, setProjGithubUrl] = useState<string>('');
   const [projHasPassword, setProjHasPassword] = useState<boolean>(true);
   const [projPassword, setProjPassword] = useState<string>('');
   const [selectedInviteUsers, setSelectedInviteUsers] = useState<StudentAccount[]>([]);
@@ -625,14 +685,48 @@ export default function App() {
       });
     });
 
+    const unsubNotifs = subscribeToInAppNotifications(firebaseUid, (items) => {
+      setCloudNotifications(items);
+    });
+
     return () => {
       unsubUsers();
       unsubProjects();
       unsubInvites();
+      unsubNotifs();
     };
   }, [firebaseUid]);
 
-  // Persist workspace helper (LocalStorage + Instant Firestore Project State Sync)
+  // Helper to prepend an event into the bounded 30-event project audit log
+  const appendProjectActivity = useCallback(
+    (
+      ws: WorkspaceData,
+      projectId: string,
+      action: string,
+      targetName: string,
+      kind: ActivityActionKind
+    ): ActivityLogItem[] => {
+      const actor = currentUser?.displayName || currentUser?.username || 'Equipo';
+      const entry: ActivityLogItem = {
+        id: `act_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        projectId,
+        actorUsername: actor,
+        action,
+        targetName,
+        kind,
+        createdAt: new Date().toISOString(),
+      };
+      const projectActs = [entry, ...ws.activities.filter((a) => a.projectId === projectId)].slice(
+        0,
+        30
+      );
+      const otherActs = ws.activities.filter((a) => a.projectId !== projectId);
+      return [...projectActs, ...otherActs];
+    },
+    [currentUser]
+  );
+
+  // Persist workspace helper (LocalStorage + Instant Firestore Project State & Public Showcase Sync)
   const saveWorkspace = useCallback(
     async (
       updated: WorkspaceData,
@@ -648,13 +742,25 @@ export default function App() {
         if (auth.currentUser?.emailVerified && targetProjId) {
           const targetProject = normalized.projects.find((p) => p.id === targetProjId);
           if (targetProject) {
+            const pFolders = normalized.folders.filter((f) => f.projectId === targetProjId);
+            const pDocs = normalized.documents.filter((d) => d.projectId === targetProjId);
+            const pTasks = normalized.tasks.filter((t) => t.projectId === targetProjId);
+            const pNotices = normalized.notices.filter((n) => n.projectId === targetProjId);
+            const pMessages = normalized.messages.filter((m) => m.projectId === targetProjId);
+            const pActivities = normalized.activities
+              .filter((a) => a.projectId === targetProjId)
+              .slice(0, 30);
+
             await syncProjectWorkspaceStateToFirestore(targetProjId, {
-              folders: normalized.folders.filter((f) => f.projectId === targetProjId),
-              documents: normalized.documents.filter((d) => d.projectId === targetProjId),
-              tasks: normalized.tasks.filter((t) => t.projectId === targetProjId),
-              notices: normalized.notices.filter((n) => n.projectId === targetProjId),
-              messages: normalized.messages.filter((m) => m.projectId === targetProjId),
+              folders: pFolders,
+              documents: pDocs,
+              tasks: pTasks,
+              notices: pNotices,
+              messages: pMessages,
+              activities: pActivities,
             });
+            // Keep public ?modo=profesor showcase silently up to date (zero PII, zero notices/chat)
+            syncProjectShowcaseToFirestore(targetProject, pFolders, pDocs, pTasks).catch(() => {});
           }
         }
       }
@@ -776,6 +882,10 @@ export default function App() {
           tasks: [...prev.tasks.filter((t) => t.projectId !== pId), ...cloudState.tasks],
           notices: [...prev.notices.filter((n) => n.projectId !== pId), ...cloudState.notices],
           messages: [...prev.messages.filter((m) => m.projectId !== pId), ...cloudState.messages],
+          activities: [
+            ...prev.activities.filter((a) => a.projectId !== pId),
+            ...(Array.isArray(cloudState.activities) ? cloudState.activities.slice(0, 30) : []),
+          ],
         };
         persistWorkspaceLocally(next);
         return next;
@@ -856,6 +966,279 @@ export default function App() {
         : [],
     [workspace, activeProject]
   );
+
+  const projectActivities = useMemo(
+    () =>
+      workspace && activeProject
+        ? workspace.activities
+            .filter((a) => a.projectId === activeProject.id)
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+            .slice(0, 30)
+        : [],
+    [workspace, activeProject]
+  );
+
+  // Automatic client-side notifications when < 48 hours remain for a project or assigned task deadline
+  const deadlineNotifications = useMemo<InAppNotificationItem[]>(() => {
+    if (!currentUser || !workspace) return [];
+    const nowMs = Date.now();
+    const limitMs = 48 * 60 * 60 * 1000;
+    const alerts: InAppNotificationItem[] = [];
+    const unameLower = currentUser.username.toLowerCase().trim();
+
+    for (const proj of myProjects) {
+      if (proj.dueDate) {
+        const dueMs = new Date(proj.dueDate).getTime();
+        const diffMs = dueMs - nowMs;
+        if (!Number.isNaN(dueMs) && diffMs > 0 && diffMs <= limitMs) {
+          const hoursLeft = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60)));
+          const id = `dl_proj_${proj.id}_${proj.dueDate.slice(0, 10)}`;
+          alerts.push({
+            id,
+            toUid: firebaseUid || currentUser.id,
+            toUsername: currentUser.username,
+            fromUid: 'system',
+            fromUsername: 'sistema',
+            projectId: proj.id,
+            projectName: proj.name,
+            kind: 'deadline_48h',
+            title: `Entrega próxima (quedan ${hoursLeft}h)`,
+            message: `La entrega de «${proj.name}» vence en menos de 48 horas.`,
+            targetSection: 'overview',
+            read: readDeadlineIds.includes(id),
+            createdAt: new Date(nowMs).toISOString(),
+          });
+        }
+      }
+    }
+
+    for (const task of workspace.tasks) {
+      if (task.status === 'completed' || !task.dueDate) continue;
+      if (task.assigneeUsername.toLowerCase().trim() !== unameLower) continue;
+      const proj = myProjects.find((p) => p.id === task.projectId);
+      if (!proj) continue;
+      const dueMs = new Date(task.dueDate).getTime();
+      const diffMs = dueMs - nowMs;
+      if (!Number.isNaN(dueMs) && diffMs > 0 && diffMs <= limitMs) {
+        const hoursLeft = Math.max(1, Math.ceil(diffMs / (1000 * 60 * 60)));
+        const id = `dl_task_${task.id}_${task.dueDate.slice(0, 10)}`;
+        alerts.push({
+          id,
+          toUid: firebaseUid || currentUser.id,
+          toUsername: currentUser.username,
+          fromUid: 'system',
+          fromUsername: 'sistema',
+          projectId: proj.id,
+          projectName: proj.name,
+          kind: 'deadline_48h',
+          title: `Tarea vence en ${hoursLeft}h`,
+          message: `Tu tarea «${task.title}» vence en menos de 48 horas.`,
+          targetSection: 'tasks',
+          read: readDeadlineIds.includes(id),
+          createdAt: new Date(nowMs).toISOString(),
+        });
+      }
+    }
+
+    return alerts;
+  }, [currentUser, workspace, myProjects, firebaseUid, readDeadlineIds]);
+
+  const allActivityNotifications = useMemo<InAppNotificationItem[]>(() => {
+    const map = new Map<string, InAppNotificationItem>();
+    for (const n of deadlineNotifications) map.set(n.id, n);
+    for (const n of cloudNotifications) map.set(n.id, n);
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }, [cloudNotifications, deadlineNotifications]);
+
+  const totalUnreadNotificationsCount = useMemo(() => {
+    const unreadActivity = allActivityNotifications.filter((n) => !n.read).length;
+    return pendingInvitations.length + unreadActivity;
+  }, [pendingInvitations.length, allActivityNotifications]);
+
+  // Fetch public read-only Teacher Showcase when opening ?modo=profesor&proyecto=<id> without login
+  useEffect(() => {
+    if (!isTeacherMode || !teacherUrlProjectId) return;
+    let cancelled = false;
+    setIsLoadingPublicShowcase(true);
+    setPublicShowcaseNotFound(false);
+
+    getPublicProjectShowcaseFromFirestore(teacherUrlProjectId)
+      .then((data) => {
+        if (cancelled) return;
+        if (data) {
+          setPublicShowcase(data);
+          setPublicShowcaseNotFound(false);
+        } else {
+          setPublicShowcase(null);
+          setPublicShowcaseNotFound(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingPublicShowcase(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isTeacherMode, teacherUrlProjectId]);
+
+  const handleEnterTeacherMode = useCallback(async () => {
+    if (!activeProject) return;
+    // Ensure public showcase is freshly synced before switching
+    if (firebaseUid) {
+      syncProjectShowcaseToFirestore(
+        activeProject,
+        projectFolders,
+        projectDocuments,
+        projectTasks
+      ).catch(() => {});
+    }
+    setTeacherUrlProjectId(activeProject.id);
+    setIsTeacherMode(true);
+    if (typeof window !== 'undefined') {
+      const nextUrl = `${window.location.pathname}?modo=profesor&proyecto=${encodeURIComponent(
+        activeProject.id
+      )}`;
+      window.history.pushState({}, '', nextUrl);
+    }
+  }, [activeProject, firebaseUid, projectFolders, projectDocuments, projectTasks]);
+
+  const handleExitTeacherMode = useCallback(() => {
+    setIsTeacherMode(false);
+    setTeacherUrlProjectId('');
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', window.location.pathname || '/');
+    }
+  }, []);
+
+  const handleCopyTeacherLink = useCallback(async () => {
+    const targetId = activeProject?.id || teacherUrlProjectId;
+    if (!targetId) return;
+    if (activeProject && firebaseUid) {
+      await syncProjectShowcaseToFirestore(
+        activeProject,
+        projectFolders,
+        projectDocuments,
+        projectTasks
+      );
+    }
+    const shareUrl = `${window.location.origin}/?modo=profesor&proyecto=${encodeURIComponent(
+      targetId
+    )}`;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = shareUrl;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    setCopiedTeacherLink(true);
+    showToast('Enlace directo ?modo=profesor copiado al portapapeles.');
+    window.setTimeout(() => setCopiedTeacherLink(false), 2600);
+  }, [
+    activeProject,
+    teacherUrlProjectId,
+    firebaseUid,
+    projectFolders,
+    projectDocuments,
+    projectTasks,
+    showToast,
+  ]);
+
+  const handleUpdateProjectGithubUrl = useCallback(
+    async (nextUrl: string) => {
+      if (!activeProject || !workspace) return;
+      const cleaned = nextUrl.trim();
+      const updatedProj: ProjectItem = {
+        ...activeProject,
+        githubUrl: cleaned,
+        updatedAt: new Date().toISOString(),
+      };
+      if (firebaseUid) {
+        await updateProjectGithubUrlInFirestore(activeProject.id, cleaned);
+        syncProjectShowcaseToFirestore(
+          updatedProj,
+          projectFolders,
+          projectDocuments,
+          projectTasks
+        ).catch(() => {});
+      }
+      const nextWs: WorkspaceData = {
+        ...workspace,
+        projects: workspace.projects.map((p) => (p.id === activeProject.id ? updatedProj : p)),
+      };
+      await saveWorkspace(nextWs, undefined, true);
+      showToast(
+        cleaned
+          ? 'Repositorio público de GitHub vinculado al proyecto.'
+          : 'Enlace de GitHub eliminado del proyecto.'
+      );
+    },
+    [
+      activeProject,
+      workspace,
+      firebaseUid,
+      projectFolders,
+      projectDocuments,
+      projectTasks,
+      saveWorkspace,
+      showToast,
+    ]
+  );
+
+  const handleClickActivityNotification = useCallback(
+    async (item: InAppNotificationItem) => {
+      if (!item.read) {
+        if (item.kind === 'deadline_48h') {
+          setReadDeadlineIds((prev) => {
+            const next = prev.includes(item.id) ? prev : [...prev, item.id];
+            try {
+              localStorage.setItem('chikihub_read_deadlines_v1', JSON.stringify(next));
+            } catch {
+              // ignore
+            }
+            return next;
+          });
+        } else if (firebaseUid) {
+          setCloudNotifications((prev) =>
+            prev.map((n) => (n.id === item.id ? { ...n, read: true } : n))
+          );
+          markInAppNotificationReadInFirestore(item.id).catch(() => {});
+        }
+      }
+      if (item.projectId) {
+        setSelectedProjectId(item.projectId);
+      }
+      setActiveSection(item.targetSection);
+    },
+    [firebaseUid]
+  );
+
+  const handleMarkAllNotificationsRead = useCallback(async () => {
+    const dlIds = deadlineNotifications.map((n) => n.id);
+    if (dlIds.length > 0) {
+      setReadDeadlineIds((prev) => {
+        const next = Array.from(new Set([...prev, ...dlIds]));
+        try {
+          localStorage.setItem('chikihub_read_deadlines_v1', JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+    }
+    const unreadCloud = cloudNotifications.filter((n) => !n.read);
+    if (unreadCloud.length > 0 && firebaseUid) {
+      setCloudNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+      await Promise.all(unreadCloud.map((n) => markInAppNotificationReadInFirestore(n.id)));
+    }
+    showToast('Todas las notificaciones marcadas como leídas.');
+  }, [deadlineNotifications, cloudNotifications, firebaseUid, showToast]);
 
   // Merge live real-time chat doc messages + any legacy messages from state/main, sorted chronologically
   const projectMessages = useMemo(() => {
@@ -1141,6 +1524,13 @@ export default function App() {
     const updatedWorkspace: WorkspaceData = {
       ...workspace,
       documents: [newDoc, ...workspace.documents],
+      activities: appendProjectActivity(
+        workspace,
+        activeProject.id,
+        'enlazó Google Docs',
+        newDoc.title,
+        'google_link'
+      ),
     };
 
     await saveWorkspace(updatedWorkspace);
@@ -1392,6 +1782,7 @@ export default function App() {
     setProjSubject('');
     setProjDesc('');
     setProjDueDate('2026-12-15');
+    setProjGithubUrl('');
     setProjHasPassword(true);
     setProjPassword('1234');
     setSelectedInviteUsers([]);
@@ -1405,6 +1796,7 @@ export default function App() {
     setProjSubject(activeProject.subject);
     setProjDesc(activeProject.description);
     setProjDueDate(activeProject.dueDate.slice(0, 10));
+    setProjGithubUrl(activeProject.githubUrl || '');
     setProjHasPassword(activeProject.hasPassword);
     setProjPassword(activeProject.passwordHash);
     setSelectedInviteUsers([]);
@@ -1429,6 +1821,7 @@ export default function App() {
         passwordHash: projHasPassword ? projPassword.trim() || '1234' : '',
         visibility: editingProject.visibility || 'class',
         dueDate: new Date(projDueDate || '2026-12-15').toISOString(),
+        githubUrl: projGithubUrl.trim(),
         updatedAt: nowIso,
       };
       nextProjects = workspace.projects.map((p) => (p.id === editingProject.id ? savedProject : p));
@@ -1460,6 +1853,7 @@ export default function App() {
         visibility: 'class',
         dueDate: new Date(projDueDate || '2026-12-15').toISOString(),
         driveFolderId,
+        githubUrl: projGithubUrl.trim(),
         createdAt: nowIso,
         updatedAt: nowIso,
       };
@@ -1499,7 +1893,7 @@ export default function App() {
       return;
     }
 
-    // 2. If brand-new project, initialize its real-time shared state document immediately
+    // 2. If brand-new project, initialize its real-time shared state + public showcase immediately
     if (!editingProject && firebaseUid) {
       await syncProjectWorkspaceStateToFirestore(savedProject.id, {
         folders: [],
@@ -1507,7 +1901,16 @@ export default function App() {
         tasks: [],
         notices: [],
         messages: [],
+        activities: [],
       });
+      syncProjectShowcaseToFirestore(savedProject, [], [], []).catch(() => {});
+    } else if (editingProject && firebaseUid) {
+      syncProjectShowcaseToFirestore(
+        savedProject,
+        workspace.folders.filter((f) => f.projectId === savedProject.id),
+        workspace.documents.filter((d) => d.projectId === savedProject.id),
+        workspace.tasks.filter((t) => t.projectId === savedProject.id)
+      ).catch(() => {});
     }
 
     // 3. Send invitations to Firestore AFTER project doc exists in Firestore
@@ -1832,10 +2235,22 @@ export default function App() {
         newDocuments.push(docItem);
       }
 
+      const uploadedTargetLabel =
+        newDocuments.length === 1
+          ? newDocuments[0].title
+          : `${newDocuments[0]?.title || 'archivos'} (+${newDocuments.length - 1})`;
+
       const updatedWorkspace: WorkspaceData = {
         ...workspace,
         folders: updatedFolders,
         documents: [...newDocuments, ...workspace.documents],
+        activities: appendProjectActivity(
+          workspace,
+          activeProject.id,
+          'subió',
+          uploadedTargetLabel,
+          'file_upload'
+        ),
       };
 
       await saveWorkspace(updatedWorkspace);
@@ -1961,6 +2376,13 @@ export default function App() {
     const updatedWorkspace: WorkspaceData = {
       ...workspace,
       documents: workspace.documents.map((d) => (d.id === linkingDocItem.id ? updatedDoc : d)),
+      activities: appendProjectActivity(
+        workspace,
+        updatedDoc.projectId,
+        'enlazó Google Docs',
+        updatedDoc.title,
+        'google_link'
+      ),
     };
 
     await saveWorkspace(updatedWorkspace);
@@ -2153,6 +2575,13 @@ export default function App() {
         const updatedWorkspace: WorkspaceData = {
           ...workspace,
           documents: workspace.documents.filter((d) => d.id !== docItem.id),
+          activities: appendProjectActivity(
+            workspace,
+            docItem.projectId,
+            'borró',
+            docItem.title,
+            'file_delete'
+          ),
         };
         await saveWorkspace(updatedWorkspace);
         await deleteFromFirestoreSubcollection(docItem.projectId, 'documents', docItem.id);
@@ -2203,15 +2632,17 @@ export default function App() {
     if (!workspace || !activeProject || !newTaskTitle.trim()) return;
 
     const nowIso = new Date().toISOString();
+    const assignee = newTaskAssignee || currentUser?.username || 'chiki';
     const task: TaskItem = {
       id: `tsk_${Date.now()}`,
       projectId: activeProject.id,
       ownerId: currentUser?.id || 'usr_chiki',
       title: newTaskTitle.trim(),
       description: newTaskDesc.trim(),
-      assigneeUsername: newTaskAssignee || currentUser?.username || 'chiki',
+      assigneeUsername: assignee,
       dueDate: newTaskDueDate,
       status: newTaskStatus,
+      completedAt: newTaskStatus === 'completed' ? nowIso : '',
       createdAt: nowIso,
       updatedAt: nowIso,
     };
@@ -2219,10 +2650,44 @@ export default function App() {
     const updatedWorkspace: WorkspaceData = {
       ...workspace,
       tasks: [task, ...workspace.tasks],
+      activities: appendProjectActivity(
+        workspace,
+        activeProject.id,
+        'creó la tarea',
+        task.title,
+        'task_create'
+      ),
     };
 
     await saveWorkspace(updatedWorkspace);
     await syncTaskToFirestore(task);
+
+    // Real-time in-app notification when assigning a task to a teammate
+    if (
+      firebaseUid &&
+      currentUser &&
+      assignee.toLowerCase().trim() !== currentUser.username.toLowerCase().trim()
+    ) {
+      const targetUser = workspace.users.find(
+        (u) => u.username.toLowerCase().trim() === assignee.toLowerCase().trim()
+      );
+      if (targetUser?.firebaseUid) {
+        createInAppNotificationInFirestore({
+          id: `ntf_tsk_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          toUid: targetUser.firebaseUid,
+          toUsername: targetUser.username,
+          fromUid: firebaseUid,
+          fromUsername: currentUser.username,
+          projectId: activeProject.id,
+          projectName: activeProject.name,
+          kind: 'task_assigned',
+          title: `Nueva tarea asignada por @${currentUser.username}`,
+          message: `Te han asignado la tarea «${task.title}» (entrega ${task.dueDate}).`,
+          targetSection: 'tasks',
+        }).catch(() => {});
+      }
+    }
+
     setNewTaskTitle('');
     setNewTaskDesc('');
     setShowTaskModal(false);
@@ -2231,14 +2696,28 @@ export default function App() {
 
   const handleUpdateTaskStatus = async (task: TaskItem, nextStatus: TaskStatus) => {
     if (!workspace || !activeProject) return;
+    const nowIso = new Date().toISOString();
     const updatedTask: TaskItem = {
       ...task,
       status: nextStatus,
-      updatedAt: new Date().toISOString(),
+      completedAt: nextStatus === 'completed' ? nowIso : '',
+      updatedAt: nowIso,
     };
+    const nextActivities =
+      nextStatus === 'completed' && task.status !== 'completed'
+        ? appendProjectActivity(
+            workspace,
+            activeProject.id,
+            'completó la tarea',
+            task.title,
+            'task_complete'
+          )
+        : workspace.activities;
+
     const updatedWorkspace: WorkspaceData = {
       ...workspace,
       tasks: workspace.tasks.map((t) => (t.id === task.id ? updatedTask : t)),
+      activities: nextActivities,
     };
     await saveWorkspace(updatedWorkspace);
     await syncTaskToFirestore(updatedTask);
@@ -2257,6 +2736,13 @@ export default function App() {
         const updatedWorkspace: WorkspaceData = {
           ...workspace,
           tasks: workspace.tasks.filter((t) => t.id !== task.id),
+          activities: appendProjectActivity(
+            workspace,
+            task.projectId,
+            'eliminó la tarea',
+            task.title,
+            'task_delete'
+          ),
         };
         await saveWorkspace(updatedWorkspace);
         await deleteFromFirestoreSubcollection(task.projectId, 'tasks', task.id);
@@ -2288,10 +2774,48 @@ export default function App() {
     const updatedWorkspace: WorkspaceData = {
       ...workspace,
       notices: [notice, ...workspace.notices],
+      activities: appendProjectActivity(
+        workspace,
+        activeProject.id,
+        'publicó en el tablón',
+        notice.title,
+        'notice_create'
+      ),
     };
 
     await saveWorkspace(updatedWorkspace);
     await syncNoticeToFirestore(notice);
+
+    // Detect @username mentions in title or message and send real-time in-app notifications
+    if (firebaseUid && currentUser) {
+      const combinedText = `${notice.title} ${notice.message}`;
+      const mentionMatches = Array.from(combinedText.matchAll(/@([a-zA-Z0-9_.-]{2,40})/g)).map(
+        (m) => m[1].toLowerCase().trim()
+      );
+      const uniqueMentions = Array.from(new Set(mentionMatches));
+      for (const mentionedUname of uniqueMentions) {
+        if (mentionedUname === currentUser.username.toLowerCase().trim()) continue;
+        const targetUser = workspace.users.find(
+          (u) => u.username.toLowerCase().trim() === mentionedUname
+        );
+        if (targetUser?.firebaseUid) {
+          createInAppNotificationInFirestore({
+            id: `ntf_mnt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            toUid: targetUser.firebaseUid,
+            toUsername: targetUser.username,
+            fromUid: firebaseUid,
+            fromUsername: currentUser.username,
+            projectId: activeProject.id,
+            projectName: activeProject.name,
+            kind: 'mention',
+            title: `@${currentUser.username} te mencionó en el tablón`,
+            message: `${notice.title}: ${notice.message.slice(0, 140)}`,
+            targetSection: 'notices',
+          }).catch(() => {});
+        }
+      }
+    }
+
     setNewNoticeTitle('');
     setNewNoticeMessage('');
     setShowNoticeModal(false);
@@ -2492,11 +3016,11 @@ export default function App() {
   const daysRemaining = useMemo(() => {
     if (!activeProject?.dueDate) return 0;
     const due = new Date(activeProject.dueDate).getTime();
-    const now = new Date('2026-11-17T09:00:00Z').getTime();
+    const now = Date.now();
     return Math.max(0, Math.ceil((due - now) / (1000 * 60 * 60 * 24)));
   }, [activeProject]);
 
-  // Filtered list for Tab 07 · Explorar Proyectos (must stay before early returns)
+  // Filtered list for Tab 08 · Explorar Proyectos (must stay before early returns)
   const exploredProjects = useMemo(() => {
     const q = exploreSearchQuery.trim().toLowerCase();
     return (workspace?.projects || []).filter((proj) => {
@@ -2520,6 +3044,83 @@ export default function App() {
   }
   if (currentPath === '/terminos' || currentPath === '/terms') {
     return <LegalPages page="terms" onNavigate={navigateTo} />;
+  }
+
+  // PUBLIC / AUTHENTICATED TEACHER PRESENTATION MODE (?modo=profesor&proyecto=<id>) — Direct Read-Only Access Without Login
+  if (isTeacherMode) {
+    const liveMatchingProject =
+      activeProject && (!teacherUrlProjectId || activeProject.id === teacherUrlProjectId)
+        ? activeProject
+        : workspace.projects.find((p) => p.id === teacherUrlProjectId) || null;
+
+    const liveShowcase: TeacherShowcaseData | null =
+      currentUser && liveMatchingProject && isUserMemberOfProject(liveMatchingProject, currentUser)
+        ? {
+            projectId: liveMatchingProject.id,
+            name: liveMatchingProject.name,
+            subject: liveMatchingProject.subject,
+            description: liveMatchingProject.description,
+            ownerUsername: liveMatchingProject.ownerUsername,
+            authorizedUsernames: liveMatchingProject.authorizedUsernames,
+            dueDate: liveMatchingProject.dueDate,
+            githubUrl: liveMatchingProject.githubUrl || '',
+            folders: workspace.folders.filter((f) => f.projectId === liveMatchingProject.id),
+            documents: workspace.documents.filter((d) => d.projectId === liveMatchingProject.id),
+            tasks: workspace.tasks.filter((t) => t.projectId === liveMatchingProject.id),
+            updatedAt: liveMatchingProject.updatedAt,
+          }
+        : null;
+
+    const resolvedShowcase = liveShowcase || publicShowcase;
+
+    if (resolvedShowcase) {
+      return (
+        <TeacherModeView
+          showcase={resolvedShowcase}
+          isAuthenticated={Boolean(currentUser)}
+          onExitTeacherMode={handleExitTeacherMode}
+          onCopyShareLink={handleCopyTeacherLink}
+          copiedLink={copiedTeacherLink}
+        />
+      );
+    }
+
+    if (isLoadingPublicShowcase) {
+      return (
+        <div className="min-h-screen bg-[#09090B] text-[#F4F4F6] flex items-center justify-center p-6">
+          <div className="border border-[#24242E] bg-[#0E0E12] px-6 py-5 flex items-center gap-3">
+            <RefreshCw className="w-4 h-4 text-[#3B82F6] animate-spin" />
+            <span className="font-mono text-xs tracking-wider uppercase text-[#A1A1B2]">
+              Cargando Modo Vista Profesor (Solo lectura)...
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-h-screen bg-[#09090B] text-[#F4F4F6] flex items-center justify-center p-6">
+        <div className="max-w-md w-full border border-[#24242E] bg-[#0E0E12] p-8 text-center space-y-4">
+          <Eye className="w-9 h-9 text-[#60A5FA] mx-auto" />
+          <h1 className="font-display text-xl font-bold text-white">
+            {publicShowcaseNotFound
+              ? 'Presentación no encontrada'
+              : 'Enlace de Vista Profesor incompleto'}
+          </h1>
+          <p className="text-xs text-[#9E9EAE] leading-relaxed">
+            No se encontró un proyecto público para este enlace. Pide a un integrante del equipo que
+            copie de nuevo el enlace directo desde el botón «Copiar enlace (?modo=profesor)».
+          </p>
+          <button
+            type="button"
+            onClick={handleExitTeacherMode}
+            className="h-10 px-5 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider cursor-pointer"
+          >
+            Ir a Proyectos Nebrija App
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (isLoadingWorkspace || !firebaseAuthChecked) {
@@ -3049,7 +3650,10 @@ export default function App() {
     let iconColor = 'text-[#A1A1B2] border-[#2A2A35] bg-[#121218]';
     let IconComponent = FileArchive;
 
-    if (editorKind === 'docs') {
+    if (canOpenInBuiltInViewer(docItem.title, docItem.extension) && !isZipArchiveFile(docItem.title, docItem.extension)) {
+      iconColor = 'text-[#60A5FA] border-[#3B82F6]/40 bg-[#3B82F6]/10';
+      IconComponent = FileCode2;
+    } else if (editorKind === 'docs') {
       iconColor = 'text-[#60A5FA] border-[#3B82F6]/40 bg-[#3B82F6]/10';
       IconComponent = FileText;
     } else if (editorKind === 'sheets') {
@@ -3070,7 +3674,7 @@ export default function App() {
     );
   };
 
-  // Navigation Tabs Config (Folio / ArtCraft numbered section tabs including 07 · Explorar)
+  // Navigation Tabs Config (Folio / ArtCraft numbered section tabs including 06 · Estadísticas & 08 · Explorar)
   const navSections: { id: BentoSectionTab; num: string; label: string; count?: string }[] = [
     { id: 'overview', num: '01', label: 'Resumen' },
     {
@@ -3092,15 +3696,16 @@ export default function App() {
       count: `${projectNotices.filter((n) => !n.archived).length}`,
     },
     { id: 'assistant', num: '05', label: 'IA y Chat' },
+    { id: 'stats', num: '06', label: 'Estadísticas' },
     {
       id: 'projects',
-      num: '06',
+      num: '07',
       label: 'Mis Proyectos',
       count: `${myProjects.length}/${MAX_ACTIVE_PROJECTS}`,
     },
     {
       id: 'explore',
-      num: '07',
+      num: '08',
       label: 'Explorar',
       count: `${workspace?.projects.length || 0}`,
     },
@@ -3216,8 +3821,8 @@ export default function App() {
         </a>
 
         {/* Zone 2: Concise single-line text navigation links */}
-        <nav className="hidden xl:flex items-center gap-6 text-xs font-medium text-[#8E8E9E]">
-          {navSections.slice(0, 5).map((sec) => (
+        <nav className="hidden xl:flex items-center gap-5 text-xs font-medium text-[#8E8E9E]">
+          {navSections.slice(0, 6).map((sec) => (
             <button
               key={sec.id}
               type="button"
@@ -3233,119 +3838,57 @@ export default function App() {
           ))}
         </nav>
 
-        {/* Zone 3: Notification Bell + Primary Action */}
-        <div className="flex items-center gap-2 sm:gap-3 shrink-0 relative">
-          {/* Notifications Bell Icon Button */}
+        {/* Zone 3: Activity Log Drawer Toggle + Unified Notifications Bell + Primary Action */}
+        <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 relative">
+          {/* Compact Activity Log Slide-Over Button (accessible from any tab) */}
+          {activeProject && (
+            <button
+              type="button"
+              onClick={() => setShowActivityDrawer(true)}
+              title="Historial de actividad del proyecto"
+              className="h-9 px-2.5 sm:px-3 border border-[#2A2A35] bg-[#121218] hover:border-white text-[#C4C4D0] hover:text-white inline-flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+            >
+              <History className="w-4 h-4 text-[#60A5FA]" />
+              <span className="hidden md:inline text-xs font-medium">Actividad</span>
+              {projectActivities.length > 0 && (
+                <span className="font-mono text-[10px] text-[#8E8E9E] tabular-nums">
+                  ({projectActivities.length})
+                </span>
+              )}
+            </button>
+          )}
+
+          {/* Unified Notifications Bell Icon Button */}
           <button
             type="button"
             onClick={() => setShowNotificationsPanel((prev) => !prev)}
-            title="Notificaciones e invitaciones"
+            title="Centro de notificaciones e invitaciones"
             className={`relative h-9 w-9 border flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
               showNotificationsPanel
                 ? 'border-white bg-white text-[#09090B]'
-                : pendingInvitations.length > 0
+                : totalUnreadNotificationsCount > 0
                   ? 'border-[#3B82F6] bg-[#3B82F6]/15 text-[#60A5FA] hover:border-white'
                   : 'border-[#2A2A35] bg-[#121218] text-[#C4C4D0] hover:border-white hover:text-white'
             }`}
           >
             <Bell className="w-4 h-4" />
-            {pendingInvitations.length > 0 && (
-              <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 bg-[#3B82F6] text-white font-mono text-[10px] font-bold flex items-center justify-center border border-[#09090B]">
-                {pendingInvitations.length}
+            {totalUnreadNotificationsCount > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 bg-[#3B82F6] text-white font-mono text-[10px] font-bold flex items-center justify-center border border-[#09090B] tabular-nums">
+                {totalUnreadNotificationsCount > 99 ? '99+' : totalUnreadNotificationsCount}
               </span>
             )}
           </button>
 
-          {/* Notifications Dropdown Panel */}
-          {showNotificationsPanel && (
-            <div className="absolute right-0 top-full mt-2 z-50 w-80 sm:w-96 border border-[#2E2E3A] bg-[#0E0E12] shadow-2xl">
-              <div className="px-4 py-3 border-b border-[#22222A] flex items-center justify-between">
-                <div>
-                  <span className="font-mono text-[10px] text-[#60A5FA] uppercase block">
-                    CENTRO DE NOTIFICACIONES
-                  </span>
-                  <h3 className="font-display font-bold text-xs text-white">
-                    Invitaciones a Proyectos ({pendingInvitations.length} pendientes)
-                  </h3>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowNotificationsPanel(false)}
-                  className="p-1 text-[#8E8E9E] hover:text-white cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="max-h-96 overflow-y-auto divide-y divide-[#1D1D25]">
-                {myIncomingInvitations.length === 0 ? (
-                  <div className="p-6 text-center space-y-1.5">
-                    <Bell className="w-6 h-6 text-[#555566] mx-auto" />
-                    <p className="text-xs font-medium text-[#A1A1B2]">
-                      No tienes notificaciones todavía
-                    </p>
-                    <p className="text-[11px] text-[#7E7E8E]">
-                      Cuando un compañero te invite a su proyecto, aparecerá aquí y en pantalla al
-                      instante.
-                    </p>
-                  </div>
-                ) : (
-                  myIncomingInvitations.map((inv) => (
-                    <div key={inv.id} className="p-4 space-y-2.5">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-xs text-white leading-snug">
-                            <strong className="font-mono text-[#60A5FA]">@{inv.fromUsername}</strong>{' '}
-                            te ha invitado a{' '}
-                            <strong className="text-white">«{inv.projectName}»</strong>
-                          </p>
-                          <p className="font-mono text-[10px] text-[#7E7E8E] mt-0.5">
-                            {inv.projectSubject || 'Informática'} ·{' '}
-                            {new Date(inv.createdAt).toLocaleDateString('es-ES')}
-                          </p>
-                        </div>
-
-                        {inv.status !== 'pending' && (
-                          <span
-                            className={`px-2 py-0.5 font-mono text-[10px] uppercase border shrink-0 ${
-                              inv.status === 'accepted'
-                                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                                : 'border-[#2E2E3A] bg-[#14141A] text-[#8E8E9E]'
-                            }`}
-                          >
-                            {inv.status === 'accepted' ? 'Aceptada' : 'Rechazada'}
-                          </span>
-                        )}
-                      </div>
-
-                      {inv.status === 'pending' && (
-                        <div className="flex items-center gap-2 pt-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              handleRespondInvitation(inv, 'accepted');
-                              setShowNotificationsPanel(false);
-                            }}
-                            className="flex-1 h-8 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-[11px] uppercase tracking-wider inline-flex items-center justify-center gap-1 cursor-pointer"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                            <span>Aceptar invitación</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleRespondInvitation(inv, 'declined')}
-                            className="h-8 px-3 border border-[#2E2E3A] bg-[#14141A] hover:border-rose-400 text-[#C4C4D0] hover:text-rose-300 text-[11px] uppercase cursor-pointer"
-                          >
-                            Rechazar
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          )}
+          {/* Unified Notifications Dropdown Panel (Todas | Invitaciones | Actividad) */}
+          <NotificationsBellPanel
+            isOpen={showNotificationsPanel}
+            onClose={() => setShowNotificationsPanel(false)}
+            invitations={myIncomingInvitations}
+            activityNotifications={allActivityNotifications}
+            onRespondInvitation={handleRespondInvitation}
+            onClickActivityNotification={handleClickActivityNotification}
+            onMarkAllRead={handleMarkAllNotificationsRead}
+          />
 
           <button
             type="button"
@@ -3507,6 +4050,33 @@ export default function App() {
                           01 · PROYECTO ACTIVO · {activeProject.subject}
                         </span>
                         <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleEnterTeacherMode}
+                            title="Presentación de solo lectura para evaluación del profesor"
+                            className="px-3 py-1.5 border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-xs text-emerald-300 inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Vista Profesor</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCopyTeacherLink}
+                            title="Copiar enlace directo ?modo=profesor (solo lectura sin iniciar sesión)"
+                            className="px-3 py-1.5 border border-[#2A2A35] bg-[#14141A] hover:border-white text-xs text-[#D4D4DC] inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                          >
+                            {copiedTeacherLink ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>Copiado</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5 text-[#60A5FA]" />
+                                <span>Enlace Profesor</span>
+                              </>
+                            )}
+                          </button>
                           <button
                             type="button"
                             onClick={openEditProjectModal}
@@ -3691,6 +4261,12 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+
+                {/* GitHub Public Repository Widget (Read-Only, Zero OAuth) */}
+                <GitHubRepoWidget
+                  githubUrl={activeProject.githubUrl}
+                  onSaveUrl={handleUpdateProjectGithubUrl}
+                />
 
                 {/* Row 2: 3 Spacious Bento Cards (Quick Launchers to Sections) */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-[#22222A] border border-[#22222A]">
@@ -4099,15 +4675,33 @@ export default function App() {
                                 </span>
                               </div>
 
-                              {/* File Icon & Title */}
+                              {/* File Icon & Title (Clickable for Code, Markdown & .ZIP Viewer) */}
                               <div className="flex items-start gap-4 mb-4">
                                 {renderTechnicalFileIcon(docItem)}
                                 <div className="min-w-0 flex-1">
-                                  <h4 className="font-display font-bold text-base sm:text-lg text-white break-words">
-                                    {docItem.title}
-                                  </h4>
+                                  {canOpenInBuiltInViewer(docItem.title, docItem.extension) ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => setViewerDocItem(docItem)}
+                                      className="text-left group cursor-pointer"
+                                    >
+                                      <h4 className="font-display font-bold text-base sm:text-lg text-white group-hover:text-[#60A5FA] transition-colors break-words">
+                                        {docItem.title}
+                                      </h4>
+                                    </button>
+                                  ) : (
+                                    <h4 className="font-display font-bold text-base sm:text-lg text-white break-words">
+                                      {docItem.title}
+                                    </h4>
+                                  )}
                                   <p className="text-xs text-[#8E8E9E] mt-1">
-                                    {editorKind ? (
+                                    {canOpenInBuiltInViewer(docItem.title, docItem.extension) ? (
+                                      <span className="text-[#60A5FA]">
+                                        {isZipArchiveFile(docItem.title, docItem.extension)
+                                          ? 'Explorable en visor integrado (.ZIP) sin descargar'
+                                          : 'Compatible con Visor de Código / Markdown integrado'}
+                                      </span>
+                                    ) : editorKind ? (
                                       <span className="text-[#60A5FA]">
                                         Compatible con {editorLabel}
                                       </span>
@@ -4140,7 +4734,24 @@ export default function App() {
                             </div>
 
                             {/* Bottom Rectangular Action Bar */}
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {canOpenInBuiltInViewer(docItem.title, docItem.extension) && (
+                                <button
+                                  type="button"
+                                  onClick={() => setViewerDocItem(docItem)}
+                                  className="flex-1 h-10 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center justify-center gap-2 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  <span>
+                                    {isZipArchiveFile(docItem.title, docItem.extension)
+                                      ? 'Explorar .ZIP'
+                                      : ext === 'md'
+                                        ? 'Ver Markdown'
+                                        : 'Ver Código'}
+                                  </span>
+                                </button>
+                              )}
+
                               {editorKind ? (
                                 <>
                                   <button
@@ -4170,7 +4781,9 @@ export default function App() {
                                 type="button"
                                 onClick={() => handleExtractSingleFile(docItem)}
                                 className={`${
-                                  editorKind ? 'px-4' : 'flex-1'
+                                  editorKind || canOpenInBuiltInViewer(docItem.title, docItem.extension)
+                                    ? 'px-4'
+                                    : 'flex-1'
                                 } h-10 border border-[#2A2A35] bg-[#14141A] hover:border-white text-white font-semibold text-xs uppercase tracking-wider inline-flex items-center justify-center gap-2 cursor-pointer`}
                               >
                                 <Download className="w-3.5 h-3.5 text-emerald-400" />
@@ -4696,7 +5309,20 @@ export default function App() {
             )}
 
             {/* =====================================================================================
-                PESTAÑA 06 · MIS PROYECTOS, GOOGLE DRIVE Y CUOTA GRATUITA (BENTO LAUNCHER)
+                PESTAÑA 06 · ESTADÍSTICAS Y CURVA DE RITMO (BURNDOWN + APORTACIÓN + CUOTA 50 MB)
+               ===================================================================================== */}
+            {activeSection === 'stats' && activeProject && (
+              <ProjectStatsTab
+                projectName={activeProject.name}
+                authorizedUsernames={activeProject.authorizedUsernames}
+                tasks={projectTasks}
+                documents={projectDocuments}
+                sectionPrefix="06"
+              />
+            )}
+
+            {/* =====================================================================================
+                PESTAÑA 07 · MIS PROYECTOS, GOOGLE DRIVE Y CUOTA GRATUITA (BENTO LAUNCHER)
                ===================================================================================== */}
             {activeSection === 'projects' && (
               <div className="space-y-8">
@@ -4704,7 +5330,7 @@ export default function App() {
                 <div className="border border-[#22222A] bg-[#0E0E12] p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div>
                     <span className="font-mono text-xs text-[#60A5FA] uppercase block mb-1">
-                      06 · MIS PROYECTOS Y CONEXIÓN GOOGLE DRIVE
+                      07 · MIS PROYECTOS Y CONEXIÓN GOOGLE DRIVE
                     </span>
                     <h2 className="font-display text-2xl font-bold text-white">
                       Mis Proyectos ({myProjects.length} / {MAX_ACTIVE_PROJECTS} Gratis)
@@ -4737,7 +5363,7 @@ export default function App() {
                     <Folder className="w-9 h-9 text-[#60A5FA] mx-auto" />
                     <p className="text-sm text-[#A1A1B2]">
                       Aún no tienes proyectos en tu lista. Crea uno nuevo o únete a uno desde{' '}
-                      <strong className="text-white">07 · Explorar</strong>.
+                      <strong className="text-white">08 · Explorar</strong>.
                     </p>
                   </div>
                 ) : (
@@ -4909,7 +5535,7 @@ export default function App() {
             )}
 
             {/* =====================================================================================
-                PESTAÑA 07 · EXPLORAR PROYECTOS (DIRECTORIO DE PROYECTOS DE LA CLASE + UNIRSE)
+                PESTAÑA 08 · EXPLORAR PROYECTOS (DIRECTORIO DE PROYECTOS DE LA CLASE + UNIRSE)
                ===================================================================================== */}
             {activeSection === 'explore' && (
               <div className="space-y-6">
@@ -4918,7 +5544,7 @@ export default function App() {
                   <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
                     <div className="max-w-2xl">
                       <span className="font-mono text-[11px] text-[#60A5FA] uppercase tracking-wider block mb-1.5">
-                        07 · DIRECTORIO COLABORATIVO DE LA CLASE
+                        08 · DIRECTORIO COLABORATIVO DE LA CLASE
                       </span>
                       <h2 className="font-display text-2xl font-bold text-white">
                         Explorar Proyectos
@@ -5291,7 +5917,7 @@ export default function App() {
             </div>
 
             <p className="text-xs text-[#A1A1B2] leading-relaxed">
-              Conecta tu cuenta de Google en la pestaña <strong>06 Proyectos y Drive</strong> para
+              Conecta tu cuenta de Google en la pestaña <strong>07 Mis Proyectos y Drive</strong> para
               subir y convertir este archivo automáticamente, o pega aquí el enlace compartido de
               Google Docs / Sheets / Slides:
             </p>
@@ -5469,6 +6095,19 @@ export default function App() {
                   )
                 }
               />
+              <div>
+                <label className="block font-mono text-[11px] uppercase text-[#A1A1B2] mb-1 inline-flex items-center gap-1.5">
+                  <GitBranch className="w-3.5 h-3.5 text-[#60A5FA]" />
+                  <span>Repositorio público de GitHub (opcional)</span>
+                </label>
+                <input
+                  type="url"
+                  value={projGithubUrl}
+                  onChange={(e) => setProjGithubUrl(e.target.value)}
+                  placeholder="https://github.com/usuario/repositorio"
+                  className="w-full h-10 px-3 bg-[#09090B] border border-[#2A2A35] font-mono text-xs text-white"
+                />
+              </div>
               <div className="flex items-center justify-between pt-1">
                 <label className="text-xs text-[#C4C4D0] flex items-center gap-2">
                   <input
@@ -5627,9 +6266,28 @@ export default function App() {
                 required
                 value={newNoticeMessage}
                 onChange={(e) => setNewNoticeMessage(e.target.value)}
-                placeholder="Mensaje para el grupo..."
+                placeholder="Mensaje para el grupo... Usa @usuario para notificar a un compañero"
                 className="w-full p-3 bg-[#09090B] border border-[#2A2A35] text-xs text-white"
               />
+              {activeProject.authorizedUsernames.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-mono text-[10px] uppercase text-[#7E7E8E]">Mencionar:</span>
+                  {activeProject.authorizedUsernames.map((u) => (
+                    <button
+                      key={u}
+                      type="button"
+                      onClick={() =>
+                        setNewNoticeMessage((prev) =>
+                          prev.trim().length > 0 ? `${prev.trimEnd()} @${u} ` : `@${u} `
+                        )
+                      }
+                      className="px-2 py-0.5 border border-[#2A2A35] bg-[#14141A] hover:border-[#60A5FA] font-mono text-[10px] text-[#60A5FA] cursor-pointer"
+                    >
+                      @{u}
+                    </button>
+                  ))}
+                </div>
+              )}
               <select
                 value={newNoticePriority}
                 onChange={(e) => setNewNoticePriority(e.target.value as NoticePriority)}
@@ -5658,6 +6316,20 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* ==================== SLIDE-OVER AUDIT LOG DRAWER ==================== */}
+      <ActivityLogDrawer
+        isOpen={showActivityDrawer}
+        onClose={() => setShowActivityDrawer(false)}
+        projectName={activeProject?.name || 'Proyecto'}
+        activities={projectActivities}
+      />
+
+      {/* ==================== BUILT-IN CODE / MARKDOWN / .ZIP VIEWER MODAL ==================== */}
+      <CodeMarkdownViewerModal
+        docItem={viewerDocItem}
+        onClose={() => setViewerDocItem(null)}
+      />
 
       {/* ==================== CONFIRMATION DIALOG ==================== */}
       {confirmDialog.isOpen && (

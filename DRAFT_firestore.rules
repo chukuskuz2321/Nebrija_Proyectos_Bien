@@ -71,7 +71,7 @@ service cloud.firestore {
         data.keys().hasOnly([
           'id', 'name', 'subject', 'description', 'ownerId', 'ownerUsername',
           'hasPassword', 'passwordHash', 'visibility', 'authorizedUsernames', 'memberUids',
-          'dueDate', 'driveFolderId', 'createdAt', 'updatedAt'
+          'dueDate', 'driveFolderId', 'githubUrl', 'createdAt', 'updatedAt'
         ]) &&
         data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
@@ -87,6 +87,7 @@ service cloud.firestore {
         data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 50 && data.memberUids[0] is string &&
         data.dueDate is string && data.dueDate.size() <= 40 &&
         data.driveFolderId is string && data.driveFolderId.size() <= 128 &&
+        (!('githubUrl' in data) || (data.githubUrl is string && data.githubUrl.size() <= 300)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -97,7 +98,7 @@ service cloud.firestore {
           'projectId', 'updatedBy', 'folders', 'documents', 'tasks', 'notices', 'messages', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
-          'projectId', 'updatedBy', 'folders', 'documents', 'tasks', 'notices', 'messages', 'updatedAt'
+          'projectId', 'updatedBy', 'folders', 'documents', 'tasks', 'notices', 'messages', 'activities', 'updatedAt'
         ]) &&
         data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
         data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 && data.updatedBy.matches('^[a-zA-Z0-9_\\-]+$') &&
@@ -107,7 +108,57 @@ service cloud.firestore {
         data.tasks is list && data.tasks.size() <= 200 &&
         data.notices is list && data.notices.size() <= 200 &&
         data.messages is list && data.messages.size() <= 300 &&
+        (!('activities' in data) || (data.activities is list && data.activities.size() <= 30)) &&
         data.updatedAt is timestamp;
+    }
+
+    // 3B. TeacherShowcase Blueprint (Public Direct-Get Presentation Only — Zero PII, Zero Passwords, Zero Chat/Notices)
+    function isValidTeacherShowcase(data) {
+      return data.keys().hasAll([
+          'projectId', 'name', 'subject', 'description', 'ownerUsername',
+          'authorizedUsernames', 'dueDate', 'githubUrl', 'folders', 'documents', 'tasks', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'projectId', 'name', 'subject', 'description', 'ownerUsername',
+          'authorizedUsernames', 'dueDate', 'githubUrl', 'folders', 'documents', 'tasks', 'updatedAt'
+        ]) &&
+        data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 80 &&
+        data.description is string && data.description.size() <= 1000 &&
+        data.ownerUsername is string && data.ownerUsername.size() >= 2 && data.ownerUsername.size() <= 40 &&
+        data.authorizedUsernames is list && data.authorizedUsernames.size() >= 1 && data.authorizedUsernames.size() <= 50 && data.authorizedUsernames[0] is string &&
+        data.dueDate is string && data.dueDate.size() <= 40 &&
+        data.githubUrl is string && data.githubUrl.size() <= 300 &&
+        data.folders is list && data.folders.size() <= 200 &&
+        data.documents is list && data.documents.size() <= 200 &&
+        data.tasks is list && data.tasks.size() <= 200 &&
+        data.updatedAt is timestamp;
+    }
+
+    // 3C. UserNotification Blueprint (Real-Time Task Assignment & @Mention Alerts)
+    function isValidUserNotification(data) {
+      return data.keys().hasAll([
+          'id', 'toUid', 'toUsername', 'fromUid', 'fromUsername', 'projectId', 'projectName',
+          'kind', 'title', 'message', 'targetSection', 'read', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'toUid', 'toUsername', 'fromUid', 'fromUsername', 'projectId', 'projectName',
+          'kind', 'title', 'message', 'targetSection', 'read', 'createdAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.toUid is string && data.toUid.size() >= 1 && data.toUid.size() <= 128 && data.toUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.toUsername is string && data.toUsername.size() >= 2 && data.toUsername.size() <= 40 &&
+        data.fromUid is string && data.fromUid.size() >= 1 && data.fromUid.size() <= 128 && data.fromUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.fromUsername is string && data.fromUsername.size() >= 2 && data.fromUsername.size() <= 40 &&
+        data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 && data.projectId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.projectName is string && data.projectName.size() >= 1 && data.projectName.size() <= 120 &&
+        data.kind is string && (data.kind == 'task_assigned' || data.kind == 'mention' || data.kind == 'deadline_48h') &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 400 &&
+        data.targetSection is string && (data.targetSection == 'overview' || data.targetSection == 'files' || data.targetSection == 'tasks' || data.targetSection == 'notices' || data.targetSection == 'stats') &&
+        data.read is bool &&
+        data.createdAt is timestamp;
     }
 
     // 4. ProjectInvitation Blueprint (Real-Time Notification System)
@@ -330,6 +381,32 @@ service cloud.firestore {
       allow delete: if isVerified() && isValidId(invitationId) && (existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid || isAdmin());
     }
 
+    // /notifications/{notificationId} — Real-Time In-App Activity Notifications (Task Assignments & @Mentions)
+    match /notifications/{notificationId} {
+      allow get: if isVerified() && isValidId(notificationId) && (isAdmin() || (resource != null && (existing().toUid == request.auth.uid || existing().fromUid == request.auth.uid)));
+      allow list: if isVerified() && (existing().toUid == request.auth.uid || isAdmin());
+      allow create: if isVerified() && isValidId(notificationId) &&
+        isValidUserNotification(incoming()) &&
+        incoming().id == notificationId &&
+        incoming().fromUid == request.auth.uid &&
+        incoming().read == false &&
+        incoming().createdAt == request.time &&
+        isParentProjectMember(incoming().projectId);
+      allow update: if isVerified() && isValidId(notificationId) &&
+        isValidUserNotification(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().projectId == existing().projectId &&
+        incoming().fromUid == existing().fromUid &&
+        incoming().toUid == existing().toUid &&
+        incoming().createdAt == existing().createdAt && (
+          isAdmin() ||
+          (existing().toUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['read'])
+          )
+        );
+      allow delete: if isVerified() && isValidId(notificationId) && (existing().toUid == request.auth.uid || existing().fromUid == request.auth.uid || isAdmin());
+    }
+
     // /projects/{projectId}
     match /projects/{projectId} {
       allow get: if isVerified() && isValidId(projectId) && (isAdmin() || (resource != null && (existing().visibility == 'class' || existing().ownerId == request.auth.uid || request.auth.uid in existing().memberUids)));
@@ -352,7 +429,7 @@ service cloud.firestore {
           (existing().ownerId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'name', 'subject', 'description', 'hasPassword', 'passwordHash', 'visibility',
-              'authorizedUsernames', 'memberUids', 'dueDate', 'driveFolderId', 'updatedAt'
+              'authorizedUsernames', 'memberUids', 'dueDate', 'driveFolderId', 'githubUrl', 'updatedAt'
             ])
           ) ||
           // Action 2: Verified student joins an open/password-unlocked or invited project
@@ -362,6 +439,12 @@ service cloud.firestore {
             incoming().authorizedUsernames.hasAll(existing().authorizedUsernames) &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'memberUids', 'authorizedUsernames', 'updatedAt'
+            ])
+          ) ||
+          // Action 3: Existing member links/updates public GitHub repository URL
+          (request.auth.uid in existing().memberUids &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'githubUrl', 'updatedAt'
             ])
           )
         );
@@ -383,11 +466,28 @@ service cloud.firestore {
             isAdmin() ||
             (isParentProjectMember(projectId) &&
               incoming().diff(existing()).affectedKeys().hasOnly([
-                'updatedBy', 'folders', 'documents', 'tasks', 'notices', 'messages', 'updatedAt'
+                'updatedBy', 'folders', 'documents', 'tasks', 'notices', 'messages', 'activities', 'updatedAt'
               ])
             )
           );
         allow delete: if isVerified() && isValidId(projectId) && isValidId(stateId) && (isParentProjectOwner(projectId) || isAdmin());
+      }
+
+      // /projects/{projectId}/showcase/{showcaseId} — Public Read-Only Presentation for ?modo=profesor (Direct get only, never listable)
+      match /showcase/{showcaseId} {
+        allow get: if isValidId(projectId) && showcaseId == 'public';
+        allow list: if false;
+        allow create: if isVerified() && isValidId(projectId) && showcaseId == 'public' &&
+          isValidTeacherShowcase(incoming()) &&
+          incoming().projectId == projectId &&
+          incoming().updatedAt == request.time &&
+          (isParentProjectMember(projectId) || isAdmin());
+        allow update: if isVerified() && isValidId(projectId) && showcaseId == 'public' &&
+          isValidTeacherShowcase(incoming()) &&
+          incoming().projectId == existing().projectId &&
+          incoming().updatedAt == request.time &&
+          (isParentProjectMember(projectId) || isAdmin());
+        allow delete: if isVerified() && isValidId(projectId) && showcaseId == 'public' && (isParentProjectOwner(projectId) || isAdmin());
       }
 
       // /projects/{projectId}/members/{memberId}

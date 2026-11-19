@@ -33,6 +33,9 @@ import {
   NoticeItem,
   CodeSnippetItem,
   ChatMessageItem,
+  ActivityLogItem,
+  InAppNotificationItem,
+  TeacherShowcaseData,
 } from './types';
 
 // Initialize Firebase App, Firestore, and Auth
@@ -314,6 +317,7 @@ const mapProjectDoc = (d: any): ProjectItem => {
       : [String(data.ownerId || '')].filter(Boolean),
     dueDate: String(data.dueDate || new Date().toISOString()),
     driveFolderId: String(data.driveFolderId || ''),
+    githubUrl: typeof data.githubUrl === 'string' ? data.githubUrl : '',
     createdAt: toIsoString(data.createdAt),
     updatedAt: toIsoString(data.updatedAt),
   };
@@ -353,6 +357,7 @@ export async function syncProjectToFirestore(
     memberUids: mergedMemberUids,
     dueDate: (project.dueDate || '').slice(0, 40),
     driveFolderId: (project.driveFolderId || '').slice(0, 128),
+    githubUrl: (project.githubUrl || '').trim().slice(0, 300),
     updatedAt: serverTimestamp(),
   };
 
@@ -483,12 +488,32 @@ export async function removeMemberFromProjectInFirestore(
   }
 }
 
+export async function updateProjectGithubUrlInFirestore(
+  projectId: string,
+  githubUrl: string
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !projectId) return false;
+  const pId = sanitizeId(projectId);
+  const path = `projects/${pId}`;
+  try {
+    await updateDoc(doc(db, 'projects', pId), {
+      githubUrl: githubUrl.trim().slice(0, 300),
+      updatedAt: serverTimestamp(),
+    });
+    return true;
+  } catch (error) {
+    logFirestoreError(error, OperationType.UPDATE, path);
+    return false;
+  }
+}
+
 export async function deleteProjectFromFirestore(projectId: string): Promise<boolean> {
   if (!auth.currentUser || !auth.currentUser.emailVerified) return false;
   const pId = sanitizeId(projectId);
   try {
     await deleteDoc(doc(db, 'projects', pId, 'state', 'main')).catch(() => {});
     await deleteDoc(doc(db, 'projects', pId, 'state', 'chat')).catch(() => {});
+    await deleteDoc(doc(db, 'projects', pId, 'showcase', 'public')).catch(() => {});
     await deleteDoc(doc(db, 'projects', pId));
     return true;
   } catch (error) {
@@ -549,6 +574,7 @@ export interface ProjectStateSnapshot {
   tasks: TaskItem[];
   notices: NoticeItem[];
   messages: ChatMessageItem[];
+  activities?: ActivityLogItem[];
 }
 
 export async function syncProjectWorkspaceStateToFirestore(
@@ -561,13 +587,15 @@ export async function syncProjectWorkspaceStateToFirestore(
   const path = `projects/${pId}/state/main`;
   const stateRef = doc(db, 'projects', pId, 'state', 'main');
 
-  // Keep Firestore document well below 1MB by omitting large raw base64 blobs
-  // (Google Drive links, metadata, and text previews remain 100% preserved)
+  // Keep Firestore document well below 1MB by preserving text code/markdown/small zips while omitting oversized blobs
   const sanitizedDocs = state.documents.slice(0, 200).map((d) => ({
     ...d,
-    fileDataUrl: d.fileDataUrl && d.fileDataUrl.length <= 40000 ? d.fileDataUrl : '',
-    content: (d.content || '').slice(0, 8000),
+    fileDataUrl: d.fileDataUrl && d.fileDataUrl.length <= 120000 ? d.fileDataUrl : '',
+    content: (d.content || '').slice(0, 12000),
   }));
+
+  // Bounded audit log: strictly keep only the 30 most recent events inside state/main (zero extra reads/writes!)
+  const boundedActivities = (Array.isArray(state.activities) ? state.activities : []).slice(0, 30);
 
   try {
     await setDoc(stateRef, {
@@ -578,6 +606,7 @@ export async function syncProjectWorkspaceStateToFirestore(
       tasks: state.tasks.slice(0, 200),
       notices: state.notices.slice(0, 200),
       messages: state.messages.slice(-300),
+      activities: boundedActivities,
       updatedAt: serverTimestamp(),
     });
     return true;
@@ -615,6 +644,9 @@ export function subscribeToProjectWorkspaceState(
           tasks: Array.isArray(data.tasks) ? (data.tasks as TaskItem[]) : [],
           notices: Array.isArray(data.notices) ? (data.notices as NoticeItem[]) : [],
           messages: Array.isArray(data.messages) ? (data.messages as ChatMessageItem[]) : [],
+          activities: Array.isArray(data.activities)
+            ? (data.activities as ActivityLogItem[]).slice(0, 30)
+            : [],
         });
       },
       (error) => {
@@ -875,6 +907,185 @@ export function subscribeToUserInvitations(
     unsubIn();
     unsubOut();
   };
+}
+
+// ==================== 4B. PUBLIC TEACHER SHOWCASE (?modo=profesor — ZERO PII) ====================
+
+export async function syncProjectShowcaseToFirestore(
+  project: ProjectItem,
+  folders: FolderItem[],
+  documents: DocumentItem[],
+  tasks: TaskItem[]
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !project?.id) return false;
+  const pId = sanitizeId(project.id);
+  const path = `projects/${pId}/showcase/public`;
+  const showcaseRef = doc(db, 'projects', pId, 'showcase', 'public');
+
+  const sanitizedDocs = documents.slice(0, 200).map((d) => ({
+    ...d,
+    fileDataUrl: d.fileDataUrl && d.fileDataUrl.length <= 120000 ? d.fileDataUrl : '',
+    content: (d.content || '').slice(0, 12000),
+  }));
+
+  const ownerUname = cleanUsername(project.ownerUsername || 'estudiante');
+  const members = Array.from(
+    new Set([
+      ownerUname,
+      ...(Array.isArray(project.authorizedUsernames)
+        ? project.authorizedUsernames.map((u) => cleanUsername(u))
+        : []),
+    ])
+  ).slice(0, 50);
+
+  try {
+    await setDoc(showcaseRef, {
+      projectId: pId,
+      name: (project.name || 'Proyecto').slice(0, 120),
+      subject: (project.subject || 'Informática').slice(0, 80),
+      description: (project.description || '').slice(0, 1000),
+      ownerUsername: ownerUname,
+      authorizedUsernames: members,
+      dueDate: (project.dueDate || '').slice(0, 40),
+      githubUrl: (project.githubUrl || '').trim().slice(0, 300),
+      folders: folders.slice(0, 200),
+      documents: sanitizedDocs,
+      tasks: tasks.slice(0, 200),
+      updatedAt: serverTimestamp(),
+    });
+    return true;
+  } catch (error) {
+    logFirestoreError(error, OperationType.WRITE, path);
+    return false;
+  }
+}
+
+// Public direct-get read for teachers opening ?modo=profesor&proyecto=<id> WITHOUT logging in
+export async function getPublicProjectShowcaseFromFirestore(
+  projectId: string
+): Promise<TeacherShowcaseData | null> {
+  if (!projectId) return null;
+  const pId = sanitizeId(projectId);
+  const path = `projects/${pId}/showcase/public`;
+  try {
+    const snap = await getDoc(doc(db, 'projects', pId, 'showcase', 'public'));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    return {
+      projectId: String(data.projectId || pId),
+      name: String(data.name || 'Proyecto'),
+      subject: String(data.subject || 'Informática'),
+      description: String(data.description || ''),
+      ownerUsername: String(data.ownerUsername || 'estudiante'),
+      authorizedUsernames: Array.isArray(data.authorizedUsernames)
+        ? data.authorizedUsernames.map(String)
+        : [],
+      dueDate: String(data.dueDate || new Date().toISOString()),
+      githubUrl: typeof data.githubUrl === 'string' ? data.githubUrl : '',
+      folders: Array.isArray(data.folders) ? (data.folders as FolderItem[]) : [],
+      documents: Array.isArray(data.documents) ? (data.documents as DocumentItem[]) : [],
+      tasks: Array.isArray(data.tasks) ? (data.tasks as TaskItem[]) : [],
+      updatedAt: toIsoString(data.updatedAt),
+    };
+  } catch (error) {
+    logFirestoreError(error, OperationType.GET, path);
+    return null;
+  }
+}
+
+// ==================== 4C. REAL-TIME IN-APP ACTIVITY NOTIFICATIONS ====================
+
+export async function createInAppNotificationInFirestore(
+  notification: Omit<InAppNotificationItem, 'createdAt' | 'read'>
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return false;
+  const uid = auth.currentUser.uid;
+  const notifId = sanitizeId(notification.id);
+  const path = `notifications/${notifId}`;
+  try {
+    await setDoc(doc(db, 'notifications', notifId), {
+      id: notifId,
+      toUid: sanitizeId(notification.toUid),
+      toUsername: cleanUsername(notification.toUsername),
+      fromUid: uid,
+      fromUsername: cleanUsername(notification.fromUsername),
+      projectId: sanitizeId(notification.projectId),
+      projectName: (notification.projectName || 'Proyecto').slice(0, 120),
+      kind: notification.kind,
+      title: (notification.title || 'Notificación').slice(0, 140),
+      message: (notification.message || '').slice(0, 400),
+      targetSection: notification.targetSection,
+      read: false,
+      createdAt: serverTimestamp(),
+    });
+    return true;
+  } catch (error) {
+    logFirestoreError(error, OperationType.CREATE, path);
+    return false;
+  }
+}
+
+export async function markInAppNotificationReadInFirestore(
+  notificationId: string
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !notificationId) return false;
+  const notifId = sanitizeId(notificationId);
+  const path = `notifications/${notifId}`;
+  try {
+    await updateDoc(doc(db, 'notifications', notifId), {
+      read: true,
+    });
+    return true;
+  } catch (error) {
+    logFirestoreError(error, OperationType.UPDATE, path);
+    return false;
+  }
+}
+
+export function subscribeToInAppNotifications(
+  uid: string,
+  onNotifications: (items: InAppNotificationItem[]) => void
+): () => void {
+  if (!auth.currentUser || !auth.currentUser.emailVerified || !uid) return () => {};
+  const q = query(collection(db, 'notifications'), where('toUid', '==', uid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: InAppNotificationItem[] = snap.docs
+        .map((d) => {
+          const data = d.data();
+          return {
+            id: String(data.id || d.id),
+            toUid: String(data.toUid || ''),
+            toUsername: String(data.toUsername || ''),
+            fromUid: String(data.fromUid || ''),
+            fromUsername: String(data.fromUsername || 'compañero'),
+            projectId: String(data.projectId || ''),
+            projectName: String(data.projectName || 'Proyecto'),
+            kind:
+              data.kind === 'mention' || data.kind === 'deadline_48h'
+                ? data.kind
+                : 'task_assigned',
+            title: String(data.title || 'Notificación'),
+            message: String(data.message || ''),
+            targetSection:
+              data.targetSection === 'files' ||
+              data.targetSection === 'tasks' ||
+              data.targetSection === 'notices' ||
+              data.targetSection === 'stats'
+                ? data.targetSection
+                : 'overview',
+            read: Boolean(data.read),
+            createdAt: toIsoString(data.createdAt),
+          };
+        })
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      onNotifications(list);
+    },
+    (error) => {
+      logFirestoreError(error, OperationType.LIST, 'notifications');
+    }
+  );
 }
 
 // ==================== 5. INDIVIDUAL SUBCOLLECTION MIRRORS ====================

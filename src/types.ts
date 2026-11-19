@@ -34,6 +34,7 @@ export interface ProjectItem {
   visibility?: 'class' | 'private';
   dueDate: string;
   driveFolderId: string;
+  githubUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -94,6 +95,7 @@ export interface TaskItem {
   assigneeUsername: string;
   dueDate: string;
   status: TaskStatus;
+  completedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -134,13 +136,58 @@ export interface ChatMessageItem {
   createdAt: string;
 }
 
+export type ActivityActionKind =
+  | 'file_upload'
+  | 'file_delete'
+  | 'google_link'
+  | 'task_create'
+  | 'task_complete'
+  | 'task_delete'
+  | 'notice_create';
+
 export interface ActivityLogItem {
   id: string;
   projectId: string;
   actorUsername: string;
   action: string;
   targetName: string;
+  kind?: ActivityActionKind;
   createdAt: string;
+}
+
+export type InAppNotificationKind = 'task_assigned' | 'mention' | 'deadline_48h';
+
+export type NotificationTargetSection = 'overview' | 'files' | 'tasks' | 'notices' | 'stats';
+
+export interface InAppNotificationItem {
+  id: string;
+  toUid: string;
+  toUsername: string;
+  fromUid: string;
+  fromUsername: string;
+  projectId: string;
+  projectName: string;
+  kind: InAppNotificationKind;
+  title: string;
+  message: string;
+  targetSection: NotificationTargetSection;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface TeacherShowcaseData {
+  projectId: string;
+  name: string;
+  subject: string;
+  description: string;
+  ownerUsername: string;
+  authorizedUsernames: string[];
+  dueDate: string;
+  githubUrl: string;
+  folders: FolderItem[];
+  documents: DocumentItem[];
+  tasks: TaskItem[];
+  updatedAt: string;
 }
 
 export interface WorkspaceData {
