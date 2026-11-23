@@ -153,6 +153,7 @@ import {
   saveLocalDesktopPrefs,
   sendDesktopNotification,
   setDesktopWidgetPinned,
+  triggerWindowsInstallerDownload,
 } from './services/desktopBridge';
 
 type BentoSectionTab =
@@ -477,6 +478,8 @@ export default function App() {
 
   // Windows Desktop App (Tauri v2), iOS-Style Desktop Widgets & PC Notifications
   const [showDesktopAppModal, setShowDesktopAppModal] = useState<boolean>(false);
+  const [showInstallerPendingModal, setShowInstallerPendingModal] = useState<boolean>(false);
+  const [isCheckingInstallerDownload, setIsCheckingInstallerDownload] = useState<boolean>(false);
   const [desktopPrefs, setDesktopPrefs] = useState<DesktopPreferencesState>(() =>
     loadLocalDesktopPrefs()
   );
@@ -3338,6 +3341,27 @@ export default function App() {
     [firebaseUid]
   );
 
+  const handleDesktopHeaderAction = useCallback(async () => {
+    if (isTauriDesktopApp()) {
+      setShowDesktopAppModal(true);
+      return;
+    }
+    if (isCheckingInstallerDownload) return;
+    setIsCheckingInstallerDownload(true);
+    try {
+      const result = await triggerWindowsInstallerDownload();
+      if (result === 'downloaded') {
+        setSyncBannerMessage(
+          'Descargando Proyectos-Nebrija-Setup-Windows.exe · Si Windows muestra SmartScreen la primera vez: Mas informacion -> Ejecutar de todas formas.'
+        );
+      } else {
+        setShowInstallerPendingModal(true);
+      }
+    } finally {
+      setIsCheckingInstallerDownload(false);
+    }
+  }, [isCheckingInstallerDownload]);
+
   // Make document transparent when rendering the frameless /widget route
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -3747,11 +3771,18 @@ export default function App() {
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => setShowDesktopAppModal(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold border border-[#3B82F6]/45 bg-[#3B82F6]/15 hover:bg-[#3B82F6]/25 text-[#93C5FD] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              disabled={isCheckingInstallerDownload}
+              onClick={() => void handleDesktopHeaderAction()}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold border border-[#3B82F6]/45 bg-[#3B82F6]/15 hover:bg-[#3B82F6]/25 text-[#93C5FD] transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
             >
-              <Monitor className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">App Windows</span>
+              {isTauriDesktopApp() ? (
+                <Monitor className="w-3.5 h-3.5" />
+              ) : (
+                <Download className="w-3.5 h-3.5" />
+              )}
+              <span className="hidden sm:inline">
+                {isTauriDesktopApp() ? 'Widgets PC' : 'App Windows (.exe)'}
+              </span>
             </button>
             <button
               type="button"
@@ -3776,18 +3807,61 @@ export default function App() {
           </div>
         </header>
 
-        <DesktopAppModal
-          isOpen={showDesktopAppModal}
-          onClose={() => setShowDesktopAppModal(false)}
-          prefs={desktopPrefs}
-          onUpdatePrefs={handleUpdateDesktopPrefs}
-          projects={workspace.projects || []}
-          tasks={workspace.tasks || []}
-          notices={workspace.notices || []}
-          messages={workspace.messages || []}
-          currentUsername=""
-          onToggleTaskComplete={() => {}}
-        />
+        {showInstallerPendingModal && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowInstallerPendingModal(false);
+            }}
+          >
+            <div className="w-full max-w-md rounded-2xl border border-[#24242E] bg-[#0E0E12] p-6 text-[#F4F4F6] shadow-2xl space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <BrandLogo size={28} />
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">
+                      Falta publicar el archivo .exe en GitHub
+                    </h3>
+                    <p className="text-[11px] text-[#8E8E9E]">
+                      El instalador se compila gratis en Windows mediante GitHub Actions
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowInstallerPendingModal(false)}
+                  className="rounded-lg border border-[#22222A] p-1.5 text-[#8E8E9E] hover:text-white cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <ol className="space-y-2 text-xs text-[#C8C8D4] leading-relaxed">
+                <li>
+                  1. Sube este proyecto a tu repositorio de GitHub y abre{' '}
+                  <strong className="text-white">Actions -&gt; Build Windows Desktop App -&gt; Run workflow</strong>.
+                </li>
+                <li>
+                  2. Se generara automaticamente la Release con{' '}
+                  <span className="font-mono text-[#60A5FA]">Proyectos-Nebrija-Setup-Windows.exe</span>.
+                </li>
+                <li>
+                  3. Pega la URL de descarga del .exe en Vercel como variable{' '}
+                  <span className="font-mono text-[#60A5FA]">VITE_WINDOWS_INSTALLER_URL</span> (o guardalo en{' '}
+                  <span className="font-mono text-white">public/downloads/</span>) para que este boton lo descargue directo con 1 clic.
+                </li>
+              </ol>
+              <div className="flex justify-end pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowInstallerPendingModal(false)}
+                  className="px-4 py-2 rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] text-xs font-semibold text-white cursor-pointer"
+                >
+                  Entendido
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Public Informational Hero + Integrated Bento Access Grid */}
         <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-8 py-8 sm:py-12 space-y-8">
@@ -4407,16 +4481,25 @@ export default function App() {
 
         {/* Zone 3: Windows App + Activity Log Drawer + Unified Notifications Bell + Primary Action */}
         <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 relative">
-          {/* Windows Desktop App & iOS-Style Widgets Button */}
+          {/* Web: Direct .exe Download | Windows App: Widgets & PC Notifications */}
           <button
             type="button"
-            onClick={() => setShowDesktopAppModal(true)}
-            title="App de Windows, Widgets de escritorio y Notificaciones PC"
-            className="h-9 px-2.5 sm:px-3 border border-[#3B82F6]/45 bg-[#3B82F6]/12 hover:border-[#3B82F6] hover:bg-[#3B82F6]/20 text-[#93C5FD] hover:text-white inline-flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+            disabled={isCheckingInstallerDownload}
+            onClick={() => void handleDesktopHeaderAction()}
+            title={
+              isTauriDesktopApp()
+                ? 'Configurar widgets de escritorio y notificaciones de Windows'
+                : 'Descargar instalador oficial para Windows (.exe)'
+            }
+            className="h-9 px-2.5 sm:px-3 border border-[#3B82F6]/45 bg-[#3B82F6]/12 hover:border-[#3B82F6] hover:bg-[#3B82F6]/20 text-[#93C5FD] hover:text-white inline-flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 disabled:opacity-60"
           >
-            <Monitor className="w-4 h-4 text-[#60A5FA]" />
+            {isTauriDesktopApp() ? (
+              <Monitor className="w-4 h-4 text-[#60A5FA]" />
+            ) : (
+              <Download className="w-4 h-4 text-[#60A5FA]" />
+            )}
             <span className="hidden md:inline text-xs font-semibold">
-              {isTauriDesktopApp() ? 'Widgets PC' : 'App Windows'}
+              {isTauriDesktopApp() ? 'Widgets PC' : 'Descargar App'}
             </span>
           </button>
 
@@ -7084,25 +7167,84 @@ export default function App() {
         activities={projectActivities}
       />
 
-      {/* ==================== WINDOWS DESKTOP APP, WIDGETS & PC NOTIFICATIONS MODAL ==================== */}
-      <DesktopAppModal
-        isOpen={showDesktopAppModal}
-        onClose={() => setShowDesktopAppModal(false)}
-        prefs={desktopPrefs}
-        onUpdatePrefs={handleUpdateDesktopPrefs}
-        projects={workspace.projects || []}
-        tasks={workspace.tasks || []}
-        notices={workspace.notices || []}
-        messages={workspace.messages || []}
-        currentUsername={currentUser?.username || ''}
-        onToggleTaskComplete={(task) => {
-          void handleUpdateTaskStatus(task, 'completed');
-        }}
-        onJumpToSection={(section, projectId) => {
-          if (projectId) setSelectedProjectId(projectId);
-          setActiveSection(section as BentoSectionTab);
-        }}
-      />
+      {/* ==================== WINDOWS DESKTOP APP ONLY: WIDGETS & PC NOTIFICATIONS ==================== */}
+      {isTauriDesktopApp() && (
+        <DesktopAppModal
+          isOpen={showDesktopAppModal}
+          onClose={() => setShowDesktopAppModal(false)}
+          prefs={desktopPrefs}
+          onUpdatePrefs={handleUpdateDesktopPrefs}
+          projects={workspace.projects || []}
+          tasks={workspace.tasks || []}
+          notices={workspace.notices || []}
+          messages={workspace.messages || []}
+          currentUsername={currentUser?.username || ''}
+          onToggleTaskComplete={(task) => {
+            void handleUpdateTaskStatus(task, 'completed');
+          }}
+          onJumpToSection={(section, projectId) => {
+            if (projectId) setSelectedProjectId(projectId);
+            setActiveSection(section as BentoSectionTab);
+          }}
+        />
+      )}
+
+      {/* ==================== WEB ONLY: COMPACT NOTICE IF .EXE IS NOT LINKED YET ==================== */}
+      {!isTauriDesktopApp() && showInstallerPendingModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowInstallerPendingModal(false);
+          }}
+        >
+          <div className="w-full max-w-md rounded-2xl border border-[#24242E] bg-[#0E0E12] p-6 text-[#F4F4F6] shadow-2xl space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <BrandLogo size={28} />
+                <div>
+                  <h3 className="text-sm font-semibold text-white">
+                    Falta publicar el archivo .exe en GitHub
+                  </h3>
+                  <p className="text-[11px] text-[#8E8E9E]">
+                    El instalador se compila gratis en Windows mediante GitHub Actions
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowInstallerPendingModal(false)}
+                className="rounded-lg border border-[#22222A] p-1.5 text-[#8E8E9E] hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <ol className="space-y-2 text-xs text-[#C8C8D4] leading-relaxed">
+              <li>
+                1. Sube este proyecto a tu repositorio de GitHub y abre{' '}
+                <strong className="text-white">Actions -&gt; Build Windows Desktop App -&gt; Run workflow</strong>.
+              </li>
+              <li>
+                2. Se generara automaticamente la Release con{' '}
+                <span className="font-mono text-[#60A5FA]">Proyectos-Nebrija-Setup-Windows.exe</span>.
+              </li>
+              <li>
+                3. Pega la URL de descarga del .exe en Vercel como variable{' '}
+                <span className="font-mono text-[#60A5FA]">VITE_WINDOWS_INSTALLER_URL</span> (o guardalo en{' '}
+                <span className="font-mono text-white">public/downloads/</span>) para que este boton lo descargue directo con 1 clic.
+              </li>
+            </ol>
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => setShowInstallerPendingModal(false)}
+                className="px-4 py-2 rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] text-xs font-semibold text-white cursor-pointer"
+              >
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ==================== BUILT-IN CODE / MARKDOWN / .ZIP VIEWER MODAL ==================== */}
       <CodeMarkdownViewerModal

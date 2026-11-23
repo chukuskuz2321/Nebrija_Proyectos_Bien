@@ -5,16 +5,10 @@ import {
   Check,
   CheckSquare,
   Clock,
-  Download,
-  ExternalLink,
   LayoutGrid,
   Lock,
   MessageSquare,
-  Monitor,
   Plus,
-  RefreshCw,
-  ShieldAlert,
-  Sparkles,
   Trash2,
   Unlock,
   X,
@@ -35,8 +29,6 @@ import {
   WIDGET_SIZE_META,
   closeDesktopWidgetWindow,
   getDesktopAutostart,
-  getWindowsInstallerDownloadUrl,
-  isTauriDesktopApp,
   openDesktopWidgetWindow,
   resizeDesktopWidgetWindow,
   sendDesktopNotification,
@@ -45,7 +37,6 @@ import {
 } from '../services/desktopBridge';
 import { BrandLogo } from './BrandLogo';
 import { DesktopWidgetCard } from './DesktopWidgetCard';
-import { WindowsInstallerPreview } from './WindowsInstallerPreview';
 
 interface DesktopAppModalProps {
   isOpen: boolean;
@@ -61,7 +52,7 @@ interface DesktopAppModalProps {
   onJumpToSection?: (section: string, projectId?: string) => void;
 }
 
-type ModalTab = 'download' | 'widgets' | 'notifications';
+type ModalTab = 'widgets' | 'notifications';
 
 const MODULE_ORDER: DesktopWidgetModule[] = [
   'deadlines',
@@ -73,6 +64,10 @@ const MODULE_ORDER: DesktopWidgetModule[] = [
 
 const SIZE_ORDER: DesktopWidgetSize[] = ['2x2', '4x2', '4x4'];
 
+/**
+ * Shown EXCLUSIVELY inside the installed Windows Desktop App (Tauri v2).
+ * Never rendered in the web browser.
+ */
 export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
   isOpen,
   onClose,
@@ -86,10 +81,7 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
   onToggleTaskComplete,
   onJumpToSection,
 }) => {
-  const isDesktop = isTauriDesktopApp();
-  const downloadUrl = getWindowsInstallerDownloadUrl();
-
-  const [activeTab, setActiveTab] = useState<ModalTab>(isDesktop ? 'widgets' : 'download');
+  const [activeTab, setActiveTab] = useState<ModalTab>('widgets');
   const [selectedWidgetId, setSelectedWidgetId] = useState<string>(
     prefs.widgets[0]?.id || ''
   );
@@ -107,7 +99,7 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
   }, [isOpen, prefs.widgets, selectedWidgetId]);
 
   useEffect(() => {
-    if (!isOpen || !isDesktop) return;
+    if (!isOpen) return;
     let active = true;
     getDesktopAutostart().then((val) => {
       if (active) setAutostartEnabled(val);
@@ -115,7 +107,7 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
     return () => {
       active = false;
     };
-  }, [isOpen, isDesktop]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -129,7 +121,7 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
     const updated = nextWidgets.find((w) => w.id === widgetId);
     onUpdatePrefs({ ...prefs, widgets: nextWidgets });
 
-    if (isDesktop && updated) {
+    if (updated) {
       if (patch.enabled === true) {
         void openDesktopWidgetWindow(updated);
       } else if (patch.enabled === false) {
@@ -147,8 +139,7 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
   const handleAddWidget = () => {
     if (prefs.widgets.length >= 6) return;
     const usedModules = new Set(prefs.widgets.map((w) => w.module));
-    const nextModule =
-      MODULE_ORDER.find((m) => !usedModules.has(m)) || 'tasks';
+    const nextModule = MODULE_ORDER.find((m) => !usedModules.has(m)) || 'tasks';
     const newWidget: DesktopWidgetConfig = {
       id: `widget-${Date.now().toString(36)}`,
       module: nextModule,
@@ -156,22 +147,18 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
       projectId: 'all',
       opacity: 0.92,
       locked: true,
-      enabled: isDesktop,
+      enabled: true,
     };
     const nextWidgets = [...prefs.widgets, newWidget];
     onUpdatePrefs({ ...prefs, widgets: nextWidgets });
     setSelectedWidgetId(newWidget.id);
-    if (isDesktop) {
-      void openDesktopWidgetWindow(newWidget);
-    }
+    void openDesktopWidgetWindow(newWidget);
   };
 
   const handleDeleteWidget = (widgetId: string) => {
     const nextWidgets = prefs.widgets.filter((w) => w.id !== widgetId);
     onUpdatePrefs({ ...prefs, widgets: nextWidgets });
-    if (isDesktop) {
-      void closeDesktopWidgetWindow(widgetId);
-    }
+    void closeDesktopWidgetWindow(widgetId);
     if (selectedWidgetId === widgetId) {
       setSelectedWidgetId(nextWidgets[0]?.id || '');
     }
@@ -228,26 +215,22 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
       }}
     >
       <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-[#22222A] bg-[#09090B] text-[#F4F4F6] shadow-2xl">
-        {/* Modal Header */}
+        {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#1E1E26] bg-[#0E0E12] px-5 py-4">
           <div className="flex items-center gap-3">
             <BrandLogo size={34} />
             <div>
               <div className="flex items-center gap-2.5">
                 <h2 className="text-base font-semibold tracking-tight text-white">
-                  App de Windows y Widgets
+                  Widgets y Notificaciones de Windows
                 </h2>
                 <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#8A8A9C]">
-                  <span
-                    className={`h-1.5 w-1.5 rounded-full ${
-                      isDesktop ? 'bg-emerald-400' : 'bg-[#3B82F6]'
-                    }`}
-                  />
-                  {isDesktop ? 'Modo App Windows activo' : 'Modo Web'}
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  App de Windows activa
                 </span>
               </div>
               <p className="text-xs text-[#8E8E9E]">
-                Tu misma web sincronizada en vivo con widgets estilo iOS y avisos de escritorio.
+                Fija widgets personalizables en tu escritorio y gestiona tus avisos nativos.
               </p>
             </div>
           </div>
@@ -262,10 +245,9 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
           </button>
         </div>
 
-        {/* Modal Tab Bar */}
+        {/* 2 Native App Tabs Only */}
         <div className="flex items-center gap-1 overflow-x-auto border-b border-[#1E1E26] bg-[#0B0B0F] px-5">
           {[
-            { id: 'download' as ModalTab, label: 'Descargar App Windows', icon: Download },
             { id: 'widgets' as ModalTab, label: 'Widgets estilo iOS', icon: LayoutGrid },
             { id: 'notifications' as ModalTab, label: 'Notificaciones PC', icon: Bell },
           ].map((tab) => {
@@ -290,168 +272,10 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
           })}
         </div>
 
-        {/* Modal Body */}
+        {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 sm:p-6">
-          {/* TAB 1: DOWNLOAD & INSTALLER */}
-          {activeTab === 'download' && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-                <div className="rounded-2xl border border-[#22222A] bg-[#0E0E12] p-5 lg:col-span-7">
-                  <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#3B82F6]">
-                    <Monitor className="h-3.5 w-3.5" />
-                    <span>Tauri v2 · ~15 MB · Windows 10 y 11</span>
-                  </div>
-                  <h3 className="mt-2 text-lg font-semibold text-white">
-                    Literalmente tu web, en modo aplicacion de escritorio
-                  </h3>
-                  <p className="mt-2 text-xs leading-relaxed text-[#9C9CAF]">
-                    La app de Windows abre directamente tu espacio oficial de Vercel en una
-                    ventana nativa ultrarrapida. El chat, las tareas, los archivos y las mejoras
-                    se actualizan al instante sin tener que reinstalar ni cerrar nada.
-                  </p>
-
-                  <div className="mt-4 flex flex-wrap items-center gap-3">
-                    {downloadUrl ? (
-                      <a
-                        href={downloadUrl}
-                        download
-                        className="inline-flex items-center gap-2 rounded-lg bg-[#3B82F6] px-4 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-[#2563EB]"
-                      >
-                        <Download className="h-4 w-4" />
-                        Descargar instalador Windows (.exe)
-                      </a>
-                    ) : (
-                      <div className="w-full rounded-xl border border-[#22222A] bg-[#121218] p-3.5">
-                        <div className="flex items-start gap-2.5">
-                          <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-[#60A5FA]" />
-                          <div className="text-xs leading-relaxed text-[#B4B4C6]">
-                            <p className="font-semibold text-white">
-                              Compilacion 100% gratuita lista en tu repositorio GitHub
-                            </p>
-                            <p className="mt-1">
-                              Al subir este proyecto a GitHub y ejecutar el workflow{' '}
-                              <span className="font-mono text-[#60A5FA]">
-                                Build Windows Desktop App
-                              </span>{' '}
-                              en la pestana Actions, se genera automaticamente{' '}
-                              <span className="font-mono text-white">
-                                Proyectos-Nebrija-Setup-Windows.exe
-                              </span>
-                              . Despues pega el enlace de tu Release en{' '}
-                              <span className="font-mono text-[#60A5FA]">
-                                VITE_WINDOWS_INSTALLER_URL
-                              </span>{' '}
-                              en Vercel para activar la descarga directa con un clic.
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('widgets')}
-                      className="inline-flex items-center gap-2 rounded-lg border border-[#262630] bg-[#14141A] px-4 py-2.5 text-xs font-semibold text-[#E4E4EE] transition-colors hover:border-[#3A3A48] hover:text-white"
-                    >
-                      <LayoutGrid className="h-3.5 w-3.5 text-[#3B82F6]" />
-                      Personalizar mis widgets
-                    </button>
-                  </div>
-
-                  {isDesktop && (
-                    <div className="mt-4 flex items-center justify-between rounded-xl border border-[#22222A] bg-[#121218] px-4 py-3">
-                      <div>
-                        <p className="text-xs font-semibold text-white">
-                          Iniciar automaticamente con Windows
-                        </p>
-                        <p className="text-[11px] text-[#8A8A9C]">
-                          Mantiene tus widgets fijados y notificaciones listas al encender el PC.
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleToggleAutostart}
-                        className={`relative h-6 w-11 rounded-full transition-colors ${
-                          autostartEnabled ? 'bg-[#3B82F6]' : 'bg-[#262630]'
-                        }`}
-                      >
-                        <span
-                          className={`block h-4 w-4 rounded-full bg-white transition-transform ${
-                            autostartEnabled ? 'translate-x-6' : 'translate-x-1'
-                          }`}
-                        />
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* SmartScreen 2-step honest guide */}
-                <div className="flex flex-col justify-between rounded-2xl border border-[#22222A] bg-[#0E0E12] p-5 lg:col-span-5">
-                  <div>
-                    <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-400">
-                      <ShieldAlert className="h-3.5 w-3.5" />
-                      <span>Aviso de primera ejecucion (gratis)</span>
-                    </div>
-                    <h4 className="mt-2 text-sm font-semibold text-white">
-                      Si Windows SmartScreen muestra un aviso azul
-                    </h4>
-                    <p className="mt-1.5 text-xs leading-relaxed text-[#9C9CAF]">
-                      Para mantener la app 100% gratuita no usa certificado comercial de pago
-                      (~300€/ano). La primera vez que abras el instalador solo haz estos 2 pasos:
-                    </p>
-                    <ol className="mt-3 space-y-2 text-xs text-[#D4D4E0]">
-                      <li className="flex items-start gap-2.5">
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-[#2A2A36] bg-[#15151C] font-mono text-[11px] font-bold text-[#60A5FA]">
-                          1
-                        </span>
-                        <span>
-                          Pulsa en <strong className="text-white">Mas informacion</strong> en la
-                          ventana azul de Windows Defender.
-                        </span>
-                      </li>
-                      <li className="flex items-start gap-2.5">
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-[#2A2A36] bg-[#15151C] font-mono text-[11px] font-bold text-[#60A5FA]">
-                          2
-                        </span>
-                        <span>
-                          Pulsa <strong className="text-white">Ejecutar de todas formas</strong>{' '}
-                          para abrir el instalador animado.
-                        </span>
-                      </li>
-                    </ol>
-                  </div>
-
-                  <div className="mt-4 flex items-center gap-2 border-t border-[#1E1E26] pt-3 text-[11px] text-[#848496]">
-                    <RefreshCw className="h-3.5 w-3.5 text-emerald-400" />
-                    <span>Solo pasa una vez; despues se abre directo sin avisos.</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Interactive Custom Installer Preview */}
-              <div>
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h4 className="text-sm font-semibold text-white">
-                      Vista previa interactiva del instalador personalizado
-                    </h4>
-                    <p className="text-xs text-[#8E8E9E]">
-                      Prueba aqui mismo los 4 pasos animados exactos del ejecutable .exe de Windows.
-                    </p>
-                  </div>
-                </div>
-                <WindowsInstallerPreview
-                  downloadUrl={downloadUrl}
-                  onLaunchApp={onClose}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: iOS-STYLE WIDGET STUDIO */}
           {activeTab === 'widgets' && (
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-              {/* Left: Widget list & controls */}
               <div className="space-y-4 lg:col-span-5">
                 <div className="flex items-center justify-between">
                   <div>
@@ -459,7 +283,7 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
                       Tus widgets de escritorio ({prefs.widgets.length}/6)
                     </h3>
                     <p className="text-[11px] text-[#8A8A9C]">
-                      Se guardan en tu cuenta y aparecen fijados en Windows.
+                      Se guardan en tu cuenta y se muestran fijados en Windows.
                     </p>
                   </div>
                   <button
@@ -472,7 +296,6 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
                   </button>
                 </div>
 
-                {/* Widget items */}
                 <div className="space-y-2">
                   {prefs.widgets.map((widget) => {
                     const meta = WIDGET_MODULE_META[widget.module];
@@ -507,18 +330,13 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
                               e.stopPropagation();
                               updateWidget(widget.id, { enabled: !widget.enabled });
                             }}
-                            title={
-                              widget.enabled
-                                ? 'Activo en escritorio'
-                                : 'Mostrar en escritorio'
-                            }
                             className={`rounded-md px-2 py-1 text-[10px] font-semibold transition-colors ${
                               widget.enabled
                                 ? 'bg-emerald-500/20 text-emerald-300'
                                 : 'bg-[#1A1A22] text-[#8E8E9E] hover:text-white'
                             }`}
                           >
-                            {widget.enabled ? 'Activo' : 'Oculto'}
+                            {widget.enabled ? 'Visible' : 'Oculto'}
                           </button>
                           {prefs.widgets.length > 1 && (
                             <button
@@ -539,7 +357,6 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
                   })}
                 </div>
 
-                {/* Selected widget inspector */}
                 {selectedWidget && (
                   <div className="space-y-4 rounded-2xl border border-[#22222A] bg-[#0E0E12] p-4">
                     <div>
@@ -663,41 +480,29 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
                         {selectedWidget.locked ? 'Fijado al escritorio' : 'Posicion libre'}
                       </button>
 
-                      {isDesktop ? (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            updateWidget(selectedWidget.id, {
-                              enabled: !selectedWidget.enabled,
-                            })
-                          }
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-[#3B82F6] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2563EB]"
-                        >
-                          {selectedWidget.enabled ? 'Ocultar del escritorio' : 'Fijar en escritorio'}
-                        </button>
-                      ) : (
-                        <a
-                          href={`/widget?id=${encodeURIComponent(selectedWidget.id)}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-[#3B82F6]/40 bg-[#3B82F6]/10 px-3 py-1.5 text-xs font-semibold text-[#60A5FA] hover:bg-[#3B82F6]/20"
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" /> Vista aislada /widget
-                        </a>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateWidget(selectedWidget.id, {
+                            enabled: !selectedWidget.enabled,
+                          })
+                        }
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#3B82F6] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2563EB]"
+                      >
+                        {selectedWidget.enabled ? 'Ocultar del escritorio' : 'Fijar en escritorio'}
+                      </button>
                     </div>
                   </div>
                 )}
               </div>
 
-              {/* Right: Live Windows Desktop Preview */}
               <div className="flex flex-col lg:col-span-7">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-semibold text-[#D4D4E0]">
-                    Vista previa en tiempo real sobre escritorio
+                    Vista previa en tiempo real
                   </span>
                   <span className="text-[11px] text-[#7E7E90]">
-                    Puedes marcar tareas aqui mismo
+                    Los cambios se aplican al instante en tu escritorio
                   </span>
                 </div>
                 <div
@@ -707,7 +512,6 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
                       'radial-gradient(circle at 20% 20%, rgba(59,130,246,0.18), transparent 45%), radial-gradient(circle at 80% 80%, rgba(30,58,138,0.22), transparent 50%), linear-gradient(135deg, #07070A 0%, #0D1018 55%, #09090D 100%)',
                   }}
                 >
-                  {/* Subtle desktop grid */}
                   <div
                     className="pointer-events-none absolute inset-0 opacity-20"
                     style={{
@@ -742,18 +546,41 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
             </div>
           )}
 
-          {/* TAB 3: PC NOTIFICATIONS */}
           {activeTab === 'notifications' && (
             <div className="mx-auto max-w-2xl space-y-5">
+              <div className="flex items-center justify-between rounded-2xl border border-[#22222A] bg-[#0E0E12] px-5 py-4">
+                <div>
+                  <p className="text-sm font-semibold text-white">
+                    Iniciar automaticamente con Windows
+                  </p>
+                  <p className="mt-0.5 text-xs text-[#8A8A9C]">
+                    Mantiene tus widgets fijados y notificaciones listas al encender el PC.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleAutostart}
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                    autostartEnabled ? 'bg-[#3B82F6]' : 'bg-[#262630]'
+                  }`}
+                >
+                  <span
+                    className={`block h-4 w-4 rounded-full bg-white transition-transform ${
+                      autostartEnabled ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+
               <div className="rounded-2xl border border-[#22222A] bg-[#0E0E12] p-5">
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div>
                     <h3 className="text-sm font-semibold text-white">
-                      Notificaciones nativas en Windows (PC)
+                      Notificaciones nativas de Windows
                     </h3>
                     <p className="mt-1 text-xs text-[#8E8E9E]">
                       Saltan en el Centro de Acciones de Windows en tiempo real cuando ocurren
-                      cambios en tus proyectos. Solo para escritorio PC.
+                      cambios en tus proyectos.
                     </p>
                   </div>
                   <button
@@ -849,12 +676,12 @@ export const DesktopAppModal: React.FC<DesktopAppModalProps> = ({
 
                   {testAlertStatus === 'sent' && (
                     <span className="text-xs font-medium text-emerald-400">
-                      Notificacion enviada al escritorio.
+                      Notificacion enviada al Centro de Acciones.
                     </span>
                   )}
                   {testAlertStatus === 'blocked' && (
                     <span className="text-xs text-amber-400">
-                      Permite las notificaciones en tu navegador o abre la App de Windows.
+                      Revisa los permisos de notificaciones de Windows.
                     </span>
                   )}
                 </div>

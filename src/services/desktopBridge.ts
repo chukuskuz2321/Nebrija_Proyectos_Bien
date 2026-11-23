@@ -119,6 +119,9 @@ export async function invokeDesktopCommand<T = unknown>(
   }
 }
 
+export const WINDOWS_INSTALLER_FILENAME = 'Proyectos-Nebrija-Setup-Windows.exe';
+export const LOCAL_WINDOWS_INSTALLER_PATH = `/downloads/${WINDOWS_INSTALLER_FILENAME}`;
+
 export function getWindowsInstallerDownloadUrl(): string {
   const envUrl =
     (import.meta as unknown as { env?: Record<string, string | undefined> }).env
@@ -128,6 +131,39 @@ export function getWindowsInstallerDownloadUrl(): string {
     return trimmed;
   }
   return '';
+}
+
+function startBrowserFileDownload(url: string, filename: string): void {
+  if (typeof document === 'undefined') return;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.rel = 'noopener noreferrer';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+export async function triggerWindowsInstallerDownload(): Promise<'downloaded' | 'not_published'> {
+  const configuredUrl = getWindowsInstallerDownloadUrl();
+  if (configuredUrl) {
+    startBrowserFileDownload(configuredUrl, WINDOWS_INSTALLER_FILENAME);
+    return 'downloaded';
+  }
+
+  // Fallback: check if the .exe was placed directly in public/downloads/ (must not be SPA HTML)
+  try {
+    const res = await fetch(LOCAL_WINDOWS_INSTALLER_PATH, { method: 'HEAD' });
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (res.ok && !contentType.includes('text/html')) {
+      startBrowserFileDownload(LOCAL_WINDOWS_INSTALLER_PATH, WINDOWS_INSTALLER_FILENAME);
+      return 'downloaded';
+    }
+  } catch {
+    // Ignore network probe error and report not published
+  }
+
+  return 'not_published';
 }
 
 function getLocalPrefsKey(uid?: string): string {
