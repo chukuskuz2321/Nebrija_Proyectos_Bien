@@ -51,6 +51,8 @@ import {
   Copy,
   FileCode2,
   GitBranch,
+  Paperclip,
+  Image as ImageIcon,
 } from 'lucide-react';
 import {
   WorkspaceData,
@@ -132,6 +134,7 @@ import {
 import { GitHubRepoWidget } from './components/GitHubRepoWidget';
 import { NotificationsBellPanel } from './components/NotificationsBellPanel';
 import { TeacherModeView } from './components/TeacherModeView';
+import { AiRichMessage, AiAttachmentPreview } from './components/AiRichMessage';
 
 type BentoSectionTab =
   | 'overview'
@@ -514,17 +517,30 @@ export default function App() {
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const lastViewedProjectRef = useRef<{ id: string; name: string } | null>(null);
   const [aiMessages, setAiMessages] = useState<
-    { id: string; role: 'user' | 'assistant'; text: string; timestamp: string }[]
+    {
+      id: string;
+      role: 'user' | 'assistant';
+      text: string;
+      timestamp: string;
+      attachments?: AiAttachmentPreview[];
+    }[]
   >([
     {
       id: 'welcome_ai',
       role: 'assistant',
-      text: 'Soy la IA técnica exclusiva de este proyecto. Conozco vuestras carpetas, archivos subidos, tareas y avisos. Pregúntame cualquier duda técnica del trabajo (no respondo temas ajenos al proyecto).',
+      text: '## Asistente Técnico del Proyecto\nSoy la IA exclusiva de este espacio de trabajo. Conozco vuestras **{azul:carpetas}**, **{cian:archivos}**, **{verde:tareas}** y **{ambar:avisos}**.\n\n- Pídeme **estadísticas visuales**, tablas comparativas o el árbol limpio de carpetas.\n- Sube **imágenes, PDFs, Word (.docx), código o .ZIP** usando el botón de adjuntar.\n- Activa **Gráfico / Imagen** para generar diagramas e ilustraciones descargables en **PNG y SVG**.',
       timestamp: 'Ahora',
     },
   ]);
   const [aiQuestion, setAiQuestion] = useState<string>('');
   const [isAiThinking, setIsAiThinking] = useState<boolean>(false);
+  const [aiAttachments, setAiAttachments] = useState<
+    (AiAttachmentPreview & { dataBase64?: string; textContent?: string })[]
+  >([]);
+  const [aiVisualMode, setAiVisualMode] = useState<boolean>(false);
+  const [isDraggingAiFile, setIsDraggingAiFile] = useState<boolean>(false);
+  const aiFileInputRef = useRef<HTMLInputElement | null>(null);
+  const aiEndRef = useRef<HTMLDivElement | null>(null);
 
   // Confirmation Dialog
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({
@@ -2890,43 +2906,266 @@ export default function App() {
     syncMessageToFirestore(msg);
   };
 
-  // Strictly Scoped Project AI Assistant Handler
-  const handleAskProjectAi = async (customPrompt?: string) => {
+  // Auto-scroll AI conversation on new response
+  useEffect(() => {
+    if (commMode === 'ai' && activeSection === 'assistant') {
+      aiEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [aiMessages.length, isAiThinking, commMode, activeSection]);
+
+  // Process local files attached to the AI Assistant (Images, PDF, DOCX, ZIP, Code/Text)
+  const handleProcessAiFiles = async (fileList: FileList | File[]) => {
+    const incoming = Array.from(fileList || []);
+    if (incoming.length === 0) return;
+
+    const MAX_AI_FILES = 4;
+    const MAX_AI_FILE_SIZE = 6 * 1024 * 1024; // 6 MB per file
+
+    const remainingSlots = MAX_AI_FILES - aiAttachments.length;
+    if (remainingSlots <= 0) {
+      showToast('Máximo 4 archivos adjuntos por consulta a la IA.');
+      return;
+    }
+
+    const toProcess = incoming.slice(0, remainingSlots);
+    const prepared: (AiAttachmentPreview & { dataBase64?: string; textContent?: string })[] = [];
+
+    const readAsDataUrl = (file: File): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
+        reader.readAsDataURL(file);
+      });
+
+    for (const file of toProcess) {
+      if (file.size > MAX_AI_FILE_SIZE) {
+        showToast(`"${file.name}" supera el límite de 6 MB para adjuntar a la IA.`);
+        continue;
+      }
+
+      const ext = getFileExtension(file.name).toLowerCase();
+      const mime = file.type || '';
+      const id = `ai_att_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+      try {
+        // 1. Images -> Multimodal inlineData + live thumbnail preview
+        if (mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) {
+          const dataUrl = await readAsDataUrl(file);
+          const resolvedMime = mime || `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+          const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
+          prepared.push({
+            id,
+            name: file.name,
+            mimeType: resolvedMime,
+            sizeBytes: file.size,
+            previewUrl: dataUrl,
+            dataBase64: base64,
+          });
+          continue;
+        }
+
+        // 2. PDF -> Multimodal inlineData (Gemini reads PDF pages directly)
+        if (mime === 'application/pdf' || ext === 'pdf') {
+          const dataUrl = await readAsDataUrl(file);
+          const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
+          prepared.push({
+            id,
+            name: file.name,
+            mimeType: 'application/pdf',
+            sizeBytes: file.size,
+            dataBase64: base64,
+          });
+          continue;
+        }
+
+        // 3. Word (.docx) -> Extract plain text from word/document.xml using JSZip
+        if (ext === 'docx') {
+          const zip = await JSZip.loadAsync(file);
+          const xmlEntry = zip.file('word/document.xml');
+          let extracted = '';
+          if (xmlEntry) {
+            const rawXml = await xmlEntry.async('string');
+            extracted = rawXml
+              .replace(/<\/w:p>/g, '\n')
+              .replace(/<[^>]+>/g, ' ')
+              .replace(/[ \t]{2,}/g, ' ')
+              .replace(/\n{3,}/g, '\n\n')
+              .trim();
+          }
+          prepared.push({
+            id,
+            name: file.name,
+            mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            sizeBytes: file.size,
+            textContent: extracted || '(Documento Word sin texto extraíble)',
+          });
+          continue;
+        }
+
+        // 4. ZIP archive -> Extract tree + text/code snippets using JSZip
+        if (ext === 'zip') {
+          const zip = await JSZip.loadAsync(file);
+          const entries = Object.values(zip.files).filter((e) => !e.dir);
+          const lines: string[] = [
+            `Contenido del archivo ZIP (${entries.length} archivos):`,
+            ...entries.slice(0, 60).map((e) => `- ${e.name}`),
+          ];
+          const textExts = new Set([
+            'txt', 'md', 'json', 'js', 'ts', 'tsx', 'jsx', 'py', 'html', 'css',
+            'sql', 'java', 'c', 'cpp', 'h', 'csv', 'xml', 'yml', 'yaml', 'sh',
+          ]);
+          let snippetBudget = 12000;
+          for (const entry of entries.slice(0, 12)) {
+            const entryExt = getFileExtension(entry.name).toLowerCase();
+            if (textExts.has(entryExt) && snippetBudget > 400) {
+              const txt = await entry.async('string');
+              const slice = txt.slice(0, Math.min(2500, snippetBudget));
+              lines.push(`\n--- Archivo interno: ${entry.name} ---\n${slice}`);
+              snippetBudget -= slice.length;
+            }
+          }
+          prepared.push({
+            id,
+            name: file.name,
+            mimeType: 'application/zip',
+            sizeBytes: file.size,
+            textContent: lines.join('\n'),
+          });
+          continue;
+        }
+
+        // 5. Text / Code / CSV / JSON / Markdown / SQL
+        const textContent = await file.text();
+        prepared.push({
+          id,
+          name: file.name,
+          mimeType: mime || 'text/plain',
+          sizeBytes: file.size,
+          textContent: textContent.slice(0, 24000),
+        });
+      } catch {
+        showToast(`No se pudo procesar el archivo "${file.name}".`);
+      }
+    }
+
+    if (prepared.length > 0) {
+      setAiAttachments((prev) => [...prev, ...prepared].slice(0, MAX_AI_FILES));
+    }
+  };
+
+  // Strictly Scoped Multimodal Project AI Assistant Handler
+  const handleAskProjectAi = async (customPrompt?: string, forceVisualMode?: boolean) => {
     const questionText = (customPrompt ?? aiQuestion).trim();
-    if (!questionText || !activeProject || isAiThinking) return;
+    const pendingFiles = customPrompt ? [] : aiAttachments;
+    const useVisualMode = forceVisualMode !== undefined ? forceVisualMode : aiVisualMode;
+
+    if ((!questionText && pendingFiles.length === 0) || !activeProject || isAiThinking) return;
+
+    const displayQuestion =
+      questionText ||
+      `Analiza ${pendingFiles.length === 1 ? 'el archivo adjuntado' : 'los archivos adjuntados'} y dame un resumen estructurado.`;
 
     const userMsg = {
       id: `ai_u_${Date.now()}`,
       role: 'user' as const,
-      text: questionText,
+      text: displayQuestion,
       timestamp: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+      attachments: pendingFiles.map(({ id, name, mimeType, sizeBytes, previewUrl }) => ({
+        id,
+        name,
+        mimeType,
+        sizeBytes,
+        previewUrl,
+      })),
     };
 
     setAiMessages((prev) => [...prev, userMsg]);
-    if (!customPrompt) setAiQuestion('');
+    if (!customPrompt) {
+      setAiQuestion('');
+      setAiAttachments([]);
+      setAiVisualMode(false);
+    }
     setIsAiThinking(true);
 
     try {
-      const foldersSummary = projectFolders.map((f) => `- Carpeta: ${f.name}`).join('\n');
+      const folderMap = new Map<string, string>(projectFolders.map((f) => [f.id, f.name]));
+      const foldersSummary = projectFolders
+        .map((f) => {
+          const parentName =
+            f.parentId && f.parentId !== 'root' ? folderMap.get(f.parentId) || 'Raíz' : 'Raíz';
+          return `- Carpeta: "${f.name}" (Ubicación: ${parentName})`;
+        })
+        .join('\n');
+
       const documentsSummary = projectDocuments
-        .map(
-          (d) =>
-            `- Archivo: "${d.title}" (.${(d.extension || getFileExtension(d.title) || 'bin').toUpperCase()}, Responsable: @${d.assigneeUsername})\n  Resumen: ${d.content.slice(0, 300)}`
-        )
+        .map((d) => {
+          const folderName =
+            d.folderId && d.folderId !== 'root' ? folderMap.get(d.folderId) || 'Raíz' : 'Raíz';
+          return `- Archivo: "${d.title}" (.${(
+            d.extension ||
+            getFileExtension(d.title) ||
+            'bin'
+          ).toUpperCase()}, Carpeta: ${folderName}, Tamaño: ${formatBytes(
+            d.sizeBytes || 0
+          )}, Responsable: @${d.assigneeUsername})\n  Resumen: ${d.content.slice(0, 260)}`;
+        })
         .join('\n\n');
+
       const tasksSummary = projectTasks
         .map((t) => `- [${t.status}] ${t.title} (Responsable: @${t.assigneeUsername})`)
         .join('\n');
+
       const noticesSummary = projectNotices
         .filter((n) => !n.archived)
         .map((n) => `- [${n.priority.toUpperCase()}] ${n.title}: ${n.message}`)
         .join('\n');
 
+      // Real-time project metrics for inline AI charts & KPI widgets
+      const doneCount = projectTasks.filter((t) => t.status === 'completed').length;
+      const inProgressCount = projectTasks.filter((t) => t.status === 'in_progress').length;
+      const todoCount = projectTasks.filter((t) => t.status === 'pending').length;
+      const totalTasksCount = projectTasks.length;
+      const pctDone = totalTasksCount > 0 ? Math.round((doneCount / totalTasksCount) * 100) : 0;
+      const usedBytes = projectDocuments.reduce((acc, d) => acc + (d.sizeBytes || 0), 0);
+      const storagePct = Math.min(100, Math.round((usedBytes / MAX_PROJECT_STORAGE_BYTES) * 100));
+
+      const memberStats = activeProject.authorizedUsernames
+        .map((uname) => {
+          const uLow = uname.toLowerCase();
+          const uDone = projectTasks.filter(
+            (t) => t.assigneeUsername.toLowerCase() === uLow && t.status === 'completed'
+          ).length;
+          const uTotalTasks = projectTasks.filter(
+            (t) => t.assigneeUsername.toLowerCase() === uLow
+          ).length;
+          const uFiles = projectDocuments.filter(
+            (d) => d.assigneeUsername.toLowerCase() === uLow
+          ).length;
+          return `  * @${uname}: ${uDone}/${uTotalTasks} tareas completadas, ${uFiles} archivos subidos`;
+        })
+        .join('\n');
+
+      const statsSummary = [
+        `- Progreso general de tareas: ${pctDone}% (${doneCount} completadas, ${inProgressCount} en progreso, ${todoCount} pendientes de ${totalTasksCount} totales)`,
+        `- Total de carpetas: ${projectFolders.length} | Total de archivos: ${projectDocuments.length}`,
+        `- Espacio ocupado: ${formatBytes(usedBytes)} / 50 MB (${storagePct}%)`,
+        `- Aportación por miembro:\n${memberStats || '  * Sin datos por miembro'}`,
+      ].join('\n');
+
       const res = await fetch('/api/ai/project-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          question: questionText,
+          question: displayQuestion,
+          visualMode: useVisualMode,
+          attachments: pendingFiles.map(({ name, mimeType, dataBase64, textContent, sizeBytes }) => ({
+            name,
+            mimeType,
+            dataBase64,
+            textContent,
+            sizeBytes,
+          })),
           history: aiMessages.map((m) => ({ role: m.role, text: m.text })),
           projectContext: {
             name: activeProject.name,
@@ -2934,6 +3173,7 @@ export default function App() {
             description: activeProject.description,
             authorizedUsernames: activeProject.authorizedUsernames,
             dueDate: activeProject.dueDate.slice(0, 10),
+            statsSummary,
             foldersSummary,
             documentsSummary,
             tasksSummary,
@@ -2954,7 +3194,7 @@ export default function App() {
         res.ok && data.answer
           ? data.answer
           : data.error ||
-            `No se pudo obtener respuesta de la IA (HTTP ${res.status}). Verifica que GEMINI_API_KEY esté configurada en Vercel ➔ Settings ➔ Environment Variables y que hayas hecho Redeploy.`;
+            `No se pudo obtener respuesta de la IA (HTTP ${res.status}). Verifica que GEMINI_API_KEY esté configurada en Vercel -> Settings -> Environment Variables y que hayas hecho Redeploy.`;
 
       setAiMessages((prev) => [
         ...prev,
@@ -2975,7 +3215,7 @@ export default function App() {
         {
           id: `ai_err_${Date.now()}`,
           role: 'assistant',
-          text: `Error de conexión con la IA del proyecto${detail}. Comprueba tu conexión o revisa GEMINI_API_KEY en Vercel.`,
+          text: `Error de conexión con la IA del proyecto${detail}. Comprueba tu conexión o revisa GEMINI_API_KEY en el servidor.`,
           timestamp: 'Ahora',
         },
       ]);
@@ -5151,63 +5391,151 @@ export default function App() {
                     {commMode === 'ai' && (
                       <div className="space-y-2.5">
                         <p className="font-mono text-[11px] uppercase text-[#8E8E9E]">
-                          CONSULTAS RÁPIDAS DEL PROYECTO:
+                          CONSULTAS VISUALES RÁPIDAS:
                         </p>
                         {[
-                          '¿Qué archivos y carpetas tenemos subidos y qué falta para la entrega?',
-                          'Haz un resumen de las tareas pendientes por compañero',
-                          'Dame la receta de lentejas (Prueba de bloqueo ajeno al proyecto)',
-                        ].map((q) => (
+                          {
+                            label: 'Hazme unas estadísticas visuales del proyecto (KPIs y gráficas)',
+                            visual: false,
+                          },
+                          {
+                            label: 'Muéstrame todas las carpetas y archivos en un árbol visual y una tabla limpia',
+                            visual: false,
+                          },
+                          {
+                            label: 'Genera un diagrama visual descargable de la arquitectura o flujo de nuestro proyecto',
+                            visual: true,
+                          },
+                          {
+                            label: 'Haz una hoja de ruta visual con las tareas pendientes por compañero',
+                            visual: false,
+                          },
+                        ].map((item) => (
                           <button
-                            key={q}
+                            key={item.label}
                             type="button"
-                            onClick={() => handleAskProjectAi(q)}
-                            className="w-full p-3 text-left border border-[#2A2A35] bg-[#111116] hover:border-white text-xs text-[#D4D4DC] transition-colors cursor-pointer"
+                            onClick={() => handleAskProjectAi(item.label, item.visual)}
+                            className="w-full p-3 text-left border border-[#2A2A35] bg-[#111116] hover:border-white text-xs text-[#D4D4DC] transition-colors cursor-pointer flex items-start gap-2"
                           >
-                            {q}
+                            {item.visual ? (
+                              <ImageIcon className="w-3.5 h-3.5 text-[#60A5FA] mt-0.5 shrink-0" />
+                            ) : (
+                              <Sparkles className="w-3.5 h-3.5 text-[#60A5FA] mt-0.5 shrink-0" />
+                            )}
+                            <span>{item.label}</span>
                           </button>
                         ))}
                       </div>
                     )}
                   </div>
 
-                  <div className="p-4 border border-[#22222A] bg-[#111116] text-xs text-[#8E8E9E] space-y-1">
-                    <p className="font-mono text-white">CONTEXTO SINCRONIZADO:</p>
+                  <div className="p-4 border border-[#22222A] bg-[#111116] text-xs text-[#8E8E9E] space-y-1.5">
+                    <p className="font-mono text-white">CONTEXTO MULTIMODAL ACTIVO:</p>
                     <p className="tabular-nums">
                       {projectFolders.length} carpetas · {projectDocuments.length} archivos ·{' '}
                       {projectTasks.length} tareas
+                    </p>
+                    <p className="text-[11px] text-[#7E7E90]">
+                      Admite adjuntar imágenes, PDF, Word (.docx), código y .ZIP.
                     </p>
                   </div>
                 </div>
 
                 {/* Right 8 Cols: Conversation Viewport */}
-                <div className="lg:col-span-8 bg-[#09090B] flex flex-col justify-between min-h-[520px]">
+                <div
+                  className={`lg:col-span-8 bg-[#09090B] flex flex-col justify-between min-h-[580px] relative transition-colors ${
+                    isDraggingAiFile && commMode === 'ai' ? 'ring-2 ring-[#3B82F6] ring-inset' : ''
+                  }`}
+                  onDragOver={(e) => {
+                    if (commMode !== 'ai') return;
+                    e.preventDefault();
+                    setIsDraggingAiFile(true);
+                  }}
+                  onDragLeave={(e) => {
+                    if (commMode !== 'ai') return;
+                    e.preventDefault();
+                    setIsDraggingAiFile(false);
+                  }}
+                  onDrop={(e) => {
+                    if (commMode !== 'ai') return;
+                    e.preventDefault();
+                    setIsDraggingAiFile(false);
+                    if (e.dataTransfer.files?.length) {
+                      handleProcessAiFiles(e.dataTransfer.files);
+                    }
+                  }}
+                >
                   {commMode === 'ai' ? (
                     <>
-                      <div className="p-6 space-y-4 h-[440px] overflow-y-auto">
+                      {isDraggingAiFile && (
+                        <div className="absolute inset-0 z-20 bg-[#09090B]/90 border-2 border-dashed border-[#3B82F6] flex flex-col items-center justify-center gap-2 pointer-events-none p-6 text-center">
+                          <Upload className="w-8 h-8 text-[#60A5FA]" />
+                          <p className="font-display text-sm font-semibold text-white">
+                            Suelta aquí tus archivos para analizarlos con la IA
+                          </p>
+                          <p className="text-xs text-[#8E8E9E]">
+                            Imágenes, PDF, Word (.docx), código fuente o archivos .ZIP (máx. 6 MB)
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="p-4 sm:p-6 space-y-5 h-[500px] overflow-y-auto">
                         {aiMessages.map((m) => (
                           <div
                             key={m.id}
-                            className={`flex ${
-                              m.role === 'user' ? 'justify-end' : 'justify-start'
+                            className={`flex flex-col ${
+                              m.role === 'user' ? 'items-end' : 'items-start'
                             }`}
                           >
-                            <div
-                              className={`max-w-2xl px-4 py-3 text-xs sm:text-sm whitespace-pre-wrap leading-relaxed border ${
-                                m.role === 'user'
-                                  ? 'bg-white text-[#09090B] border-white font-medium'
-                                  : 'bg-[#121218] text-[#E4E4EC] border-[#262632]'
-                              }`}
-                            >
-                              {m.text}
-                            </div>
+                            <span className="font-mono text-[10px] uppercase tracking-wider text-[#7E7E8E] mb-1.5">
+                              {m.role === 'user'
+                                ? `@${currentUser.username} · ${m.timestamp}`
+                                : `Asistente IA · ${m.timestamp}`}
+                            </span>
+
+                            {m.role === 'user' ? (
+                              <div className="max-w-2xl px-4 py-3 text-xs sm:text-sm bg-white text-[#09090B] border border-white font-medium space-y-2.5">
+                                {m.attachments && m.attachments.length > 0 && (
+                                  <div className="flex flex-wrap gap-2">
+                                    {m.attachments.map((att) => (
+                                      <div
+                                        key={att.id}
+                                        className="flex items-center gap-2 border border-zinc-300 bg-zinc-100 px-2.5 py-1.5 text-[11px] text-zinc-900"
+                                      >
+                                        {att.previewUrl ? (
+                                          <img
+                                            src={att.previewUrl}
+                                            alt={att.name}
+                                            className="w-8 h-8 object-cover border border-zinc-300 shrink-0"
+                                          />
+                                        ) : (
+                                          <FileText className="w-3.5 h-3.5 text-zinc-700 shrink-0" />
+                                        )}
+                                        <span className="truncate max-w-[150px] font-mono">
+                                          {att.name}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                <p className="whitespace-pre-wrap leading-relaxed">{m.text}</p>
+                              </div>
+                            ) : (
+                              <div className="w-full max-w-3xl px-4 sm:px-5 py-4 bg-[#111117] border border-[#262634]">
+                                <AiRichMessage text={m.text} />
+                              </div>
+                            )}
                           </div>
                         ))}
                         {isAiThinking && (
-                          <div className="font-mono text-xs text-[#60A5FA]">
-                            Analizando carpetas, archivos y tareas del proyecto...
+                          <div className="flex items-center gap-2.5 border border-[#242432] bg-[#101017] px-4 py-3 max-w-md">
+                            <RefreshCw className="w-3.5 h-3.5 text-[#60A5FA] animate-spin shrink-0" />
+                            <span className="font-mono text-xs text-[#93C5FD]">
+                              Analizando contexto, archivos y diseñando respuesta visual...
+                            </span>
                           </div>
                         )}
+                        <div ref={aiEndRef} />
                       </div>
 
                       <form
@@ -5215,23 +5543,114 @@ export default function App() {
                           e.preventDefault();
                           handleAskProjectAi();
                         }}
-                        className="p-4 border-t border-[#22222A] bg-[#0E0E12] flex gap-2"
+                        className="p-3 sm:p-4 border-t border-[#22222A] bg-[#0E0E12] space-y-2.5"
                       >
+                        {/* Pending File Attachment Chips */}
+                        {aiAttachments.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {aiAttachments.map((att) => (
+                              <div
+                                key={att.id}
+                                className="flex items-center gap-2 border border-[#2E2E3D] bg-[#15151E] px-2.5 py-1.5 text-xs text-[#E4E4EE]"
+                              >
+                                {att.previewUrl ? (
+                                  <img
+                                    src={att.previewUrl}
+                                    alt={att.name}
+                                    className="w-7 h-7 object-cover border border-[#323244] shrink-0"
+                                  />
+                                ) : (
+                                  <FileText className="w-3.5 h-3.5 text-[#60A5FA] shrink-0" />
+                                )}
+                                <div className="min-w-0">
+                                  <p className="font-mono text-[11px] text-white truncate max-w-[160px]">
+                                    {att.name}
+                                  </p>
+                                  <p className="font-mono text-[9px] text-[#8E8E9E]">
+                                    {formatBytes(att.sizeBytes)}
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setAiAttachments((prev) => prev.filter((a) => a.id !== att.id))
+                                  }
+                                  title="Quitar archivo"
+                                  className="text-[#8E8E9E] hover:text-white p-0.5 cursor-pointer"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
                         <input
-                          type="text"
-                          value={aiQuestion}
-                          onChange={(e) => setAiQuestion(e.target.value)}
-                          placeholder={`Pregunta cualquier duda técnica sobre "${activeProject.name}"...`}
-                          className="flex-1 h-11 px-4 bg-[#09090B] border border-[#2A2A35] text-sm text-white focus:outline-none focus:border-white"
+                          ref={aiFileInputRef}
+                          type="file"
+                          multiple
+                          accept="image/*,.pdf,.docx,.zip,.txt,.md,.csv,.json,.py,.js,.ts,.tsx,.jsx,.html,.css,.sql,.java,.c,.cpp,.xml,.yaml,.yml"
+                          className="hidden"
+                          onChange={(e) => {
+                            if (e.target.files?.length) {
+                              handleProcessAiFiles(e.target.files);
+                            }
+                            e.target.value = '';
+                          }}
                         />
-                        <button
-                          type="submit"
-                          disabled={isAiThinking}
-                          className="h-11 px-6 bg-white hover:bg-zinc-200 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 cursor-pointer"
-                        >
-                          <Send className="w-4 h-4" />
-                          <span>Preguntar</span>
-                        </button>
+
+                        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                          {/* Upload File Button */}
+                          <button
+                            type="button"
+                            onClick={() => aiFileInputRef.current?.click()}
+                            disabled={isAiThinking}
+                            title="Adjuntar imagen, PDF, Word (.docx), código o .ZIP"
+                            className="h-11 px-3 border border-[#2A2A35] bg-[#121219] hover:border-white text-[#C4C4D4] hover:text-white inline-flex items-center gap-1.5 text-xs font-medium transition-colors cursor-pointer shrink-0"
+                          >
+                            <Paperclip className="w-4 h-4 text-[#60A5FA]" />
+                            <span className="hidden sm:inline">Adjuntar</span>
+                          </button>
+
+                          {/* Visual Diagram / Downloadable Graphic Mode Toggle */}
+                          <button
+                            type="button"
+                            onClick={() => setAiVisualMode((prev) => !prev)}
+                            disabled={isAiThinking}
+                            title="Activar modo gráfico/imagen descargable (PNG/SVG)"
+                            className={`h-11 px-3 border inline-flex items-center gap-1.5 text-xs font-medium transition-colors cursor-pointer shrink-0 ${
+                              aiVisualMode
+                                ? 'border-[#3B82F6] bg-[#3B82F6]/20 text-[#93C5FD]'
+                                : 'border-[#2A2A35] bg-[#121219] hover:border-white text-[#C4C4D4] hover:text-white'
+                            }`}
+                          >
+                            <ImageIcon className="w-4 h-4" />
+                            <span className="hidden md:inline">
+                              {aiVisualMode ? 'Gráfico: ON' : 'Gráfico'}
+                            </span>
+                          </button>
+
+                          <input
+                            type="text"
+                            value={aiQuestion}
+                            onChange={(e) => setAiQuestion(e.target.value)}
+                            placeholder={
+                              aiVisualMode
+                                ? 'Describe el diagrama, esquema o gráfico visual que quieres generar...'
+                                : `Pregunta, pide estadísticas visuales o sube un archivo sobre "${activeProject.name}"...`
+                            }
+                            className="flex-1 min-w-[180px] h-11 px-4 bg-[#09090B] border border-[#2A2A35] text-sm text-white focus:outline-none focus:border-white"
+                          />
+
+                          <button
+                            type="submit"
+                            disabled={isAiThinking || (!aiQuestion.trim() && aiAttachments.length === 0)}
+                            className="h-11 px-5 bg-white hover:bg-zinc-200 disabled:opacity-50 text-[#09090B] font-semibold text-xs uppercase tracking-wider inline-flex items-center gap-2 cursor-pointer shrink-0"
+                          >
+                            <Send className="w-4 h-4" />
+                            <span>Preguntar</span>
+                          </button>
+                        </div>
                       </form>
                     </>
                   ) : (
