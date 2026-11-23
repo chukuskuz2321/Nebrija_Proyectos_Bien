@@ -36,6 +36,7 @@ import {
   ActivityLogItem,
   InAppNotificationItem,
   TeacherShowcaseData,
+  DesktopPreferencesState,
 } from './types';
 
 // Initialize Firebase App, Firestore, and Auth
@@ -1246,3 +1247,93 @@ export async function deleteFromFirestoreSubcollection(
     // Primary sync is handled via state/main
   }
 }
+
+export async function saveDesktopPreferencesToFirestore(
+  uid: string,
+  prefs: DesktopPreferencesState
+): Promise<boolean> {
+  if (!auth.currentUser || !auth.currentUser.emailVerified) return false;
+  const cleanUid = sanitizeId(uid);
+  if (!cleanUid || cleanUid !== auth.currentUser.uid) return false;
+
+  const prefRef = doc(db, 'users', cleanUid, 'private', 'desktop_prefs');
+  const sanitizedWidgets = (prefs.widgets || []).slice(0, 12).map((w) => ({
+    id: sanitizeId(w.id || `w-${Date.now()}`),
+    module: w.module || 'deadlines',
+    size: w.size || '4x2',
+    projectId: (w.projectId || 'all').slice(0, 128),
+    opacity: Math.min(1, Math.max(0.65, Number(w.opacity) || 0.92)),
+    locked: Boolean(w.locked),
+    enabled: Boolean(w.enabled),
+    ...(typeof w.x === 'number' && Number.isFinite(w.x) ? { x: Math.round(w.x) } : {}),
+    ...(typeof w.y === 'number' && Number.isFinite(w.y) ? { y: Math.round(w.y) } : {}),
+  }));
+
+  const n = prefs.notifications;
+  const sanitizedNotifications = {
+    enabled: Boolean(n?.enabled ?? true),
+    chat: Boolean(n?.chat ?? true),
+    notices: Boolean(n?.notices ?? true),
+    tasks: Boolean(n?.tasks ?? true),
+    mentions: Boolean(n?.mentions ?? true),
+    deadlines: Boolean(n?.deadlines ?? true),
+    invitations: Boolean(n?.invitations ?? true),
+  };
+
+  try {
+    await setDoc(prefRef, {
+      uid: cleanUid,
+      widgets: sanitizedWidgets,
+      notifications: sanitizedNotifications,
+      updatedAt: serverTimestamp(),
+    });
+    return true;
+  } catch (err) {
+    console.warn('[Firestore] Could not save desktop preferences:', err);
+    return false;
+  }
+}
+
+export function subscribeToDesktopPreferences(
+  uid: string,
+  onPrefs: (prefs: DesktopPreferencesState | null) => void
+): () => void {
+  const cleanUid = sanitizeId(uid);
+  if (!cleanUid) {
+    onPrefs(null);
+    return () => {};
+  }
+  const prefRef = doc(db, 'users', cleanUid, 'private', 'desktop_prefs');
+  return onSnapshot(
+    prefRef,
+    (snap) => {
+      if (!snap.exists()) {
+        onPrefs(null);
+        return;
+      }
+      const data = snap.data();
+      onPrefs({
+        widgets: Array.isArray(data.widgets) ? data.widgets : [],
+        notifications: data.notifications || {
+          enabled: true,
+          chat: true,
+          notices: true,
+          tasks: true,
+          mentions: true,
+          deadlines: true,
+          invitations: true,
+        },
+        updatedAt:
+          data.updatedAt instanceof Timestamp
+            ? data.updatedAt.toDate().toISOString()
+            : typeof data.updatedAt === 'string'
+              ? data.updatedAt
+              : undefined,
+      });
+    },
+    () => {
+      onPrefs(null);
+    }
+  );
+}
+

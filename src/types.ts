@@ -190,6 +190,38 @@ export interface TeacherShowcaseData {
   updatedAt: string;
 }
 
+export type DesktopWidgetModule = 'deadlines' | 'tasks' | 'chat' | 'notices' | 'calendar';
+
+export type DesktopWidgetSize = '2x2' | '4x2' | '4x4';
+
+export interface DesktopWidgetConfig {
+  id: string;
+  module: DesktopWidgetModule;
+  size: DesktopWidgetSize;
+  projectId: string; // 'all' or specific project ID
+  opacity: number; // 0.65 - 1.0
+  locked: boolean; // pinned to desktop
+  enabled: boolean;
+  x?: number;
+  y?: number;
+}
+
+export interface DesktopNotificationPrefs {
+  enabled: boolean;
+  chat: boolean;
+  notices: boolean;
+  tasks: boolean;
+  mentions: boolean;
+  deadlines: boolean;
+  invitations: boolean;
+}
+
+export interface DesktopPreferencesState {
+  widgets: DesktopWidgetConfig[];
+  notifications: DesktopNotificationPrefs;
+  updatedAt?: string;
+}
+
 export interface WorkspaceData {
   users: StudentAccount[];
   projects: ProjectItem[];

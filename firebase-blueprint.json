@@ -48,6 +48,32 @@
       },
       "required": ["uid", "username", "displayName", "role", "searchable", "createdAt", "updatedAt"]
     },
+    "UserDesktopPreferences": {
+      "title": "UserDesktopPreferences",
+      "description": "Private per-user Windows desktop widget layout and PC notification preferences.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "widgets": {
+          "type": "array",
+          "description": "Bounded list of user-customized desktop widgets (max 12)."
+        },
+        "notifications": {
+          "type": "object",
+          "description": "Per-category PC desktop notification toggles."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "widgets", "notifications", "updatedAt"]
+    },
     "Project": {
       "title": "Project",
       "description": "Collaborative computer science project discoverable in Explorar Proyectos with optional password protection.",
@@ -459,6 +485,10 @@
     "/users/{userId}": {
       "schema": "UserProfile",
       "description": "Public student user profiles (no PII) indexed by Firebase UID for user autocomplete."
+    },
+    "/users/{userId}/private/{prefId}": {
+      "schema": "UserDesktopPreferences",
+      "description": "Strictly owner-only desktop widget configurations and Windows notification preferences."
     },
     "/projects/{projectId}": {
       "schema": "Project",

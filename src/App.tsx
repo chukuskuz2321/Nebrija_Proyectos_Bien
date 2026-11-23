@@ -53,6 +53,7 @@ import {
   GitBranch,
   Paperclip,
   Image as ImageIcon,
+  Monitor,
 } from 'lucide-react';
 import {
   WorkspaceData,
@@ -70,6 +71,8 @@ import {
   TeacherShowcaseData,
   TaskStatus,
   NoticePriority,
+  DesktopPreferencesState,
+  DesktopWidgetConfig,
   MAX_ACTIVE_PROJECTS,
   MAX_PROJECT_STORAGE_BYTES,
   MAX_SINGLE_FILE_BYTES,
@@ -108,6 +111,8 @@ import {
   syncNoticeToFirestore,
   syncMessageToFirestore,
   deleteFromFirestoreSubcollection,
+  saveDesktopPreferencesToFirestore,
+  subscribeToDesktopPreferences,
 } from './firebase';
 import {
   createDriveFolder,
@@ -135,6 +140,20 @@ import { GitHubRepoWidget } from './components/GitHubRepoWidget';
 import { NotificationsBellPanel } from './components/NotificationsBellPanel';
 import { TeacherModeView } from './components/TeacherModeView';
 import { AiRichMessage, AiAttachmentPreview } from './components/AiRichMessage';
+import { BrandLogo } from './components/BrandLogo';
+import { DesktopAppModal } from './components/DesktopAppModal';
+import { DesktopWidgetCard } from './components/DesktopWidgetCard';
+import {
+  closeDesktopWidgetWindow,
+  focusMainDesktopWindow,
+  isTauriDesktopApp,
+  loadLocalDesktopPrefs,
+  normalizeDesktopPrefs,
+  openDesktopWidgetWindow,
+  saveLocalDesktopPrefs,
+  sendDesktopNotification,
+  setDesktopWidgetPinned,
+} from './services/desktopBridge';
 
 type BentoSectionTab =
   | 'overview'
@@ -455,6 +474,19 @@ export default function App() {
   const [copiedTeacherLink, setCopiedTeacherLink] = useState<boolean>(false);
   const [showActivityDrawer, setShowActivityDrawer] = useState<boolean>(false);
   const [viewerDocItem, setViewerDocItem] = useState<DocumentItem | null>(null);
+
+  // Windows Desktop App (Tauri v2), iOS-Style Desktop Widgets & PC Notifications
+  const [showDesktopAppModal, setShowDesktopAppModal] = useState<boolean>(false);
+  const [desktopPrefs, setDesktopPrefs] = useState<DesktopPreferencesState>(() =>
+    loadLocalDesktopPrefs()
+  );
+  const desktopWidgetsAutoOpenedRef = useRef<boolean>(false);
+  const desktopNotifsBootstrappedRef = useRef<boolean>(false);
+  const seenDesktopChatIdsRef = useRef<Set<string>>(new Set());
+  const seenDesktopNoticeIdsRef = useRef<Set<string>>(new Set());
+  const seenDesktopCloudNotifIdsRef = useRef<Set<string>>(new Set());
+  const seenDesktopInviteIdsRef = useRef<Set<string>>(new Set());
+  const seenDesktopDeadlineKeysRef = useRef<Set<string>>(new Set());
 
   // Explore Projects Search & Filter
   const [exploreSearchQuery, setExploreSearchQuery] = useState<string>('');
@@ -3278,6 +3310,278 @@ export default function App() {
     });
   }, [workspace?.projects, exploreSearchQuery, exploreFilter, isUserMemberOfProject, currentUser]);
 
+  // Sync Windows Desktop Widgets & PC Notification preferences from Firestore + localStorage
+  useEffect(() => {
+    const localPrefs = loadLocalDesktopPrefs(firebaseUid || undefined);
+    setDesktopPrefs(localPrefs);
+
+    if (!firebaseUid) return;
+    const unsub = subscribeToDesktopPreferences(firebaseUid, (cloudPrefs) => {
+      if (cloudPrefs) {
+        const normalized = normalizeDesktopPrefs(cloudPrefs);
+        setDesktopPrefs(normalized);
+        saveLocalDesktopPrefs(normalized, firebaseUid);
+      }
+    });
+    return () => unsub();
+  }, [firebaseUid]);
+
+  const handleUpdateDesktopPrefs = useCallback(
+    (next: DesktopPreferencesState) => {
+      const normalized = normalizeDesktopPrefs(next);
+      setDesktopPrefs(normalized);
+      saveLocalDesktopPrefs(normalized, firebaseUid || undefined);
+      if (firebaseUid) {
+        void saveDesktopPreferencesToFirestore(firebaseUid, normalized);
+      }
+    },
+    [firebaseUid]
+  );
+
+  // Make document transparent when rendering the frameless /widget route
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const isWidgetRoute = currentPath === '/widget';
+    if (isWidgetRoute) {
+      document.documentElement.style.background = 'transparent';
+      document.body.style.background = 'transparent';
+    } else {
+      document.documentElement.style.background = '';
+      document.body.style.background = '';
+    }
+    return () => {
+      document.documentElement.style.background = '';
+      document.body.style.background = '';
+    };
+  }, [currentPath]);
+
+  // Auto-open enabled desktop widgets once when running inside the Windows Tauri App
+  useEffect(() => {
+    if (!isTauriDesktopApp() || currentPath === '/widget' || !currentUser) return;
+    if (desktopWidgetsAutoOpenedRef.current) return;
+    desktopWidgetsAutoOpenedRef.current = true;
+    desktopPrefs.widgets
+      .filter((w) => w.enabled)
+      .forEach((w) => {
+        void openDesktopWidgetWindow(w);
+      });
+  }, [currentUser, currentPath, desktopPrefs.widgets]);
+
+  // Live Windows Desktop Notifications (PC only — skips initial hydration to prevent spam)
+  useEffect(() => {
+    if (!currentUser || currentPath === '/widget') return;
+
+    const myClean = currentUser.username.trim().toLowerCase();
+    const allMessages = workspace.messages || [];
+    const allNotices = workspace.notices || [];
+    const allInvites = (workspace.invitations || []).filter((inv) => inv.status === 'pending');
+
+    if (!desktopNotifsBootstrappedRef.current) {
+      allMessages.forEach((m) => seenDesktopChatIdsRef.current.add(m.id));
+      allNotices.forEach((n) => seenDesktopNoticeIdsRef.current.add(n.id));
+      cloudNotifications.forEach((c) => seenDesktopCloudNotifIdsRef.current.add(c.id));
+      allInvites.forEach((inv) => seenDesktopInviteIdsRef.current.add(inv.id));
+      desktopNotifsBootstrappedRef.current = true;
+      return;
+    }
+
+    const canNotify =
+      desktopPrefs.notifications.enabled &&
+      (isTauriDesktopApp() ||
+        (typeof window !== 'undefined' &&
+          'Notification' in window &&
+          Notification.permission === 'granted'));
+
+    // 1. Live team chat messages
+    allMessages.forEach((m) => {
+      if (!seenDesktopChatIdsRef.current.has(m.id)) {
+        seenDesktopChatIdsRef.current.add(m.id);
+        if (
+          canNotify &&
+          desktopPrefs.notifications.chat &&
+          (m.senderUsername || '').toLowerCase() !== myClean
+        ) {
+          const proj = workspace.projects.find((p) => p.id === m.projectId);
+          void sendDesktopNotification(
+            `Nuevo mensaje en ${proj?.name || 'Chat del proyecto'}`,
+            `@${m.senderUsername}: ${m.text}`
+          );
+        }
+      }
+    });
+
+    // 2. Live project notices
+    allNotices.forEach((n) => {
+      if (!seenDesktopNoticeIdsRef.current.has(n.id)) {
+        seenDesktopNoticeIdsRef.current.add(n.id);
+        if (
+          canNotify &&
+          desktopPrefs.notifications.notices &&
+          !n.archived &&
+          (n.authorUsername || '').toLowerCase() !== myClean
+        ) {
+          const proj = workspace.projects.find((p) => p.id === n.projectId);
+          void sendDesktopNotification(
+            `Aviso en ${proj?.name || 'Proyecto'}: ${n.title}`,
+            n.message
+          );
+        }
+      }
+    });
+
+    // 3. Assigned tasks & @mentions from cloud notifications
+    cloudNotifications.forEach((cn) => {
+      if (!seenDesktopCloudNotifIdsRef.current.has(cn.id)) {
+        seenDesktopCloudNotifIdsRef.current.add(cn.id);
+        if (canNotify && !cn.read) {
+          const allowKind =
+            (cn.kind === 'task_assigned' && desktopPrefs.notifications.tasks) ||
+            (cn.kind === 'mention' && desktopPrefs.notifications.mentions) ||
+            (cn.kind !== 'task_assigned' && cn.kind !== 'mention');
+          if (allowKind) {
+            void sendDesktopNotification(cn.title, cn.message);
+          }
+        }
+      }
+    });
+
+    // 4. Incoming project invitations
+    allInvites.forEach((inv) => {
+      if (!seenDesktopInviteIdsRef.current.has(inv.id)) {
+        seenDesktopInviteIdsRef.current.add(inv.id);
+        if (
+          canNotify &&
+          desktopPrefs.notifications.invitations &&
+          inv.toUid === firebaseUid
+        ) {
+          void sendDesktopNotification(
+            `Invitacion a ${inv.projectName}`,
+            `@${inv.fromUsername} te ha invitado a unirte al proyecto.`
+          );
+        }
+      }
+    });
+
+    // 5. Urgent deadlines (< 48h), once per day per item
+    if (canNotify && desktopPrefs.notifications.deadlines) {
+      const todayStamp = new Date().toISOString().slice(0, 10);
+      const nowMs = Date.now();
+      const fortyEightHoursMs = 48 * 60 * 60 * 1000;
+      (workspace.tasks || [])
+        .filter((t) => t.status !== 'completed' && t.dueDate)
+        .forEach((t) => {
+          const target = new Date(t.dueDate.length === 10 ? `${t.dueDate}T23:59:59` : t.dueDate);
+          const diff = target.getTime() - nowMs;
+          const key = `task-${t.id}-${todayStamp}`;
+          if (diff > 0 && diff <= fortyEightHoursMs && !seenDesktopDeadlineKeysRef.current.has(key)) {
+            seenDesktopDeadlineKeysRef.current.add(key);
+            const hoursLeft = Math.max(1, Math.round(diff / (1000 * 60 * 60)));
+            void sendDesktopNotification(
+              `Entrega proxima (${hoursLeft}h): ${t.title}`,
+              `Responsable: @${t.assigneeUsername} · Fecha limite ${t.dueDate}`
+            );
+          }
+        });
+    }
+  }, [
+    currentUser,
+    currentPath,
+    firebaseUid,
+    workspace.messages,
+    workspace.notices,
+    workspace.tasks,
+    workspace.projects,
+    workspace.invitations,
+    cloudNotifications,
+    desktopPrefs.notifications,
+  ]);
+
+  // STANDALONE DESKTOP WIDGET ROUTE (/widget?id=<widgetId>) — Transparent frameless live widget
+  if (currentPath === '/widget') {
+    const params =
+      typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+    const requestedId = params?.get('id') || '';
+    const widgetConfig: DesktopWidgetConfig =
+      desktopPrefs.widgets.find((w) => w.id === requestedId) ||
+      desktopPrefs.widgets[0] || {
+        id: 'widget-default',
+        module: 'deadlines',
+        size: '4x2',
+        projectId: 'all',
+        opacity: 0.92,
+        locked: true,
+        enabled: true,
+      };
+
+    if (!currentUser && !isLoadingWorkspace && firebaseAuthChecked) {
+      return (
+        <div className="flex h-screen w-screen items-center justify-center bg-transparent p-2">
+          <div className="flex h-full w-full flex-col items-center justify-center rounded-2xl border border-white/15 bg-[#0E0E12]/90 p-5 text-center text-[#F4F4F6] shadow-2xl">
+            <BrandLogo size={36} />
+            <p className="mt-3 text-xs font-semibold text-white">Inicia sesion para activar el widget</p>
+            <p className="mt-1 text-[11px] text-[#8E8E9E]">
+              Abre Proyectos Nebrija App e inicia sesion con Google para sincronizar tus datos.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                if (isTauriDesktopApp()) {
+                  void focusMainDesktopWindow();
+                } else {
+                  navigateTo('/');
+                }
+              }}
+              className="mt-3 rounded-lg bg-[#3B82F6] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#2563EB]"
+            >
+              Abrir aplicacion
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="h-screen w-screen overflow-hidden bg-transparent p-1.5">
+        <DesktopWidgetCard
+          config={widgetConfig}
+          projects={workspace.projects || []}
+          tasks={workspace.tasks || []}
+          notices={workspace.notices || []}
+          messages={workspace.messages || []}
+          currentUsername={currentUser?.username || ''}
+          isStandaloneWindow
+          onToggleTaskComplete={(task) => {
+            void handleUpdateTaskStatus(task, 'completed');
+          }}
+          onToggleLock={(wid) => {
+            const nextLocked = !widgetConfig.locked;
+            const updatedWidgets = desktopPrefs.widgets.map((w) =>
+              w.id === wid ? { ...w, locked: nextLocked } : w
+            );
+            handleUpdateDesktopPrefs({ ...desktopPrefs, widgets: updatedWidgets });
+            void setDesktopWidgetPinned(wid, nextLocked);
+          }}
+          onCloseWidget={(wid) => {
+            const updatedWidgets = desktopPrefs.widgets.map((w) =>
+              w.id === wid ? { ...w, enabled: false } : w
+            );
+            handleUpdateDesktopPrefs({ ...desktopPrefs, widgets: updatedWidgets });
+            void closeDesktopWidgetWindow(wid);
+          }}
+          onOpenMainApp={(section, projectId) => {
+            if (isTauriDesktopApp()) {
+              void focusMainDesktopWindow(section, projectId);
+            } else {
+              if (projectId) setSelectedProjectId(projectId);
+              if (section) setActiveSection(section as BentoSectionTab);
+              navigateTo('/');
+            }
+          }}
+        />
+      </div>
+    );
+  }
+
   // PUBLIC LEGAL ROUTES (/privacidad, /privacy, /terminos, /terms) — Always accessible without login
   if (currentPath === '/privacidad' || currentPath === '/privacy') {
     return <LegalPages page="privacy" onNavigate={navigateTo} />;
@@ -3394,16 +3698,17 @@ export default function App() {
       <div className="min-h-screen bento-grid-bg text-[#F4F4F6] flex flex-col justify-between">
         {/* Top Bar Contract (Exact Brand Match: Proyectos Nebrija App) */}
         <header className="sticky top-0 z-30 flex items-center justify-between gap-6 px-6 py-4 border-b border-[#22222A] bg-[#09090B]/95">
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2.5 shrink-0">
             <a
               href="/"
               onClick={(e) => {
                 e.preventDefault();
                 navigateTo('/');
               }}
-              className="font-display font-bold text-base tracking-tight text-white whitespace-nowrap"
+              className="inline-flex items-center gap-2.5 font-display font-bold text-base tracking-tight text-white whitespace-nowrap"
             >
-              Proyectos Nebrija App
+              <BrandLogo size={24} />
+              <span>Proyectos Nebrija App</span>
             </a>
             <span className="hidden sm:inline font-mono text-[10px] text-[#60A5FA] border border-[#2A2A35] bg-[#121218] px-2 py-0.5">
               CHIKIHUB
@@ -3442,8 +3747,16 @@ export default function App() {
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
+              onClick={() => setShowDesktopAppModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold border border-[#3B82F6]/45 bg-[#3B82F6]/15 hover:bg-[#3B82F6]/25 text-[#93C5FD] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Monitor className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">App Windows</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setShowOnboarding(true)}
-              className="px-3.5 py-2 text-xs font-mono border border-[#2A2A35] bg-[#121218] hover:border-white text-[#D4D4DC] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="hidden md:inline-flex px-3.5 py-2 text-xs font-mono border border-[#2A2A35] bg-[#121218] hover:border-white text-[#D4D4DC] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               Ver Presentación (6)
             </button>
@@ -3462,6 +3775,19 @@ export default function App() {
             </button>
           </div>
         </header>
+
+        <DesktopAppModal
+          isOpen={showDesktopAppModal}
+          onClose={() => setShowDesktopAppModal(false)}
+          prefs={desktopPrefs}
+          onUpdatePrefs={handleUpdateDesktopPrefs}
+          projects={workspace.projects || []}
+          tasks={workspace.tasks || []}
+          notices={workspace.notices || []}
+          messages={workspace.messages || []}
+          currentUsername=""
+          onToggleTaskComplete={() => {}}
+        />
 
         {/* Public Informational Hero + Integrated Bento Access Grid */}
         <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-8 py-8 sm:py-12 space-y-8">
@@ -4048,16 +4374,17 @@ export default function App() {
 
       {/* ==================== TOP BAR CONTRACT (3 ZONES, 1 ROW, 1PX BORDER) ==================== */}
       <header className="sticky top-0 z-30 flex items-center justify-between gap-4 sm:gap-8 px-4 sm:px-6 py-4 border-b border-[#22222A] bg-[#09090B]/95">
-        {/* Zone 1: Single text element wordmark */}
+        {/* Zone 1: Brand mark + Wordmark */}
         <a
           href="#top"
           onClick={(e) => {
             e.preventDefault();
             setActiveSection('overview');
           }}
-          className="font-display text-sm sm:text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0"
+          className="inline-flex items-center gap-2.5 font-display text-sm sm:text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0"
         >
-          Proyectos Nebrija App
+          <BrandLogo size={24} />
+          <span>Proyectos Nebrija App</span>
         </a>
 
         {/* Zone 2: Concise single-line text navigation links */}
@@ -4078,8 +4405,21 @@ export default function App() {
           ))}
         </nav>
 
-        {/* Zone 3: Activity Log Drawer Toggle + Unified Notifications Bell + Primary Action */}
+        {/* Zone 3: Windows App + Activity Log Drawer + Unified Notifications Bell + Primary Action */}
         <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 relative">
+          {/* Windows Desktop App & iOS-Style Widgets Button */}
+          <button
+            type="button"
+            onClick={() => setShowDesktopAppModal(true)}
+            title="App de Windows, Widgets de escritorio y Notificaciones PC"
+            className="h-9 px-2.5 sm:px-3 border border-[#3B82F6]/45 bg-[#3B82F6]/12 hover:border-[#3B82F6] hover:bg-[#3B82F6]/20 text-[#93C5FD] hover:text-white inline-flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+          >
+            <Monitor className="w-4 h-4 text-[#60A5FA]" />
+            <span className="hidden md:inline text-xs font-semibold">
+              {isTauriDesktopApp() ? 'Widgets PC' : 'App Windows'}
+            </span>
+          </button>
+
           {/* Compact Activity Log Slide-Over Button (accessible from any tab) */}
           {activeProject && (
             <button
@@ -6742,6 +7082,26 @@ export default function App() {
         onClose={() => setShowActivityDrawer(false)}
         projectName={activeProject?.name || 'Proyecto'}
         activities={projectActivities}
+      />
+
+      {/* ==================== WINDOWS DESKTOP APP, WIDGETS & PC NOTIFICATIONS MODAL ==================== */}
+      <DesktopAppModal
+        isOpen={showDesktopAppModal}
+        onClose={() => setShowDesktopAppModal(false)}
+        prefs={desktopPrefs}
+        onUpdatePrefs={handleUpdateDesktopPrefs}
+        projects={workspace.projects || []}
+        tasks={workspace.tasks || []}
+        notices={workspace.notices || []}
+        messages={workspace.messages || []}
+        currentUsername={currentUser?.username || ''}
+        onToggleTaskComplete={(task) => {
+          void handleUpdateTaskStatus(task, 'completed');
+        }}
+        onJumpToSection={(section, projectId) => {
+          if (projectId) setSelectedProjectId(projectId);
+          setActiveSection(section as BentoSectionTab);
+        }}
       />
 
       {/* ==================== BUILT-IN CODE / MARKDOWN / .ZIP VIEWER MODAL ==================== */}

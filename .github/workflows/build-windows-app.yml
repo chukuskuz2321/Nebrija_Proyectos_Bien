@@ -1,0 +1,88 @@
+name: Build Windows Desktop App
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Version tag for the GitHub Release (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            desktop/app/src-tauri -> target
+            desktop/installer/src-tauri -> target
+
+      - name: Generate official PNG and ICO assets from public/logo.svg
+        shell: bash
+        run: |
+          npm install --no-save sharp png-to-ico
+          node desktop/scripts/generate-icons.mjs
+
+      - name: Install Tauri CLI for main desktop app
+        working-directory: desktop/app
+        run: npm install
+
+      - name: Build Proyectos Nebrija App (Tauri v2 Windows .exe)
+        working-directory: desktop/app
+        run: npm run build
+
+      - name: Embed main app binary into custom animated installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "desktop/installer/src-tauri/payload" | Out-Null
+          Copy-Item -Force "desktop/app/src-tauri/target/release/proyectos-nebrija-app.exe" "desktop/installer/src-tauri/payload/proyectos-nebrija-app.exe"
+
+      - name: Install Tauri CLI for custom animated installer
+        working-directory: desktop/installer
+        run: npm install
+
+      - name: Build Custom Animated 4-Step Windows Installer (.exe)
+        working-directory: desktop/installer
+        run: npm run build
+
+      - name: Prepare release artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "release-artifacts" | Out-Null
+          Copy-Item -Force "desktop/installer/src-tauri/target/release/proyectos-nebrija-setup.exe" "release-artifacts/Proyectos-Nebrija-Setup-Windows.exe"
+          Copy-Item -Force "desktop/app/src-tauri/target/release/proyectos-nebrija-app.exe" "release-artifacts/Proyectos-Nebrija-App-Portable.exe"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: proyectos-nebrija-windows-exe
+          path: release-artifacts/*.exe
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          name: Proyectos Nebrija App ${{ github.event.inputs.release_tag || github.ref_name }} (Windows)
+          generate_release_notes: true
+          files: |
+            release-artifacts/Proyectos-Nebrija-Setup-Windows.exe
+            release-artifacts/Proyectos-Nebrija-App-Portable.exe

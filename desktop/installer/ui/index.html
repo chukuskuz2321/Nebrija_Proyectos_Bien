@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Instalador · Proyectos Nebrija App</title>
+    <style>
+      :root {
+        --bg: #09090b;
+        --panel: #0e0e12;
+        --border: #22222a;
+        --accent: #3b82f6;
+        --accent-hover: #2563eb;
+        --text: #f4f4f6;
+        --muted: #9898aa;
+        --success: #34d399;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        user-select: none;
+      }
+      .shell {
+        display: flex;
+        flex-direction: column;
+        width: 100vw;
+        height: 100vh;
+        border: 1px solid var(--border);
+        background: radial-gradient(circle at 50% 0%, rgba(59,130,246,0.12), transparent 52%), var(--bg);
+      }
+      .titlebar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        background: var(--panel);
+        border-bottom: 1px solid #1d1d25;
+      }
+      .brand-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .brand-title {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .brand-ver {
+        font-family: Consolas, monospace;
+        font-size: 10px;
+        color: #7c7c90;
+      }
+      .win-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .dots {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        margin-right: 10px;
+      }
+      .dot {
+        height: 6px;
+        width: 8px;
+        border-radius: 99px;
+        background: #282834;
+        transition: all 0.25s ease;
+      }
+      .dot.active { width: 22px; background: var(--accent); }
+      .dot.done { background: var(--success); }
+      .ctrl-btn {
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        border: 1px solid #262632;
+        background: #14141b;
+        color: #b4b4c6;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+      }
+      .ctrl-btn:hover { background: #1e1e28; color: #fff; }
+      .ctrl-btn.close:hover { background: rgba(239,68,68,0.22); color: #fca5a5; border-color: rgba(239,68,68,0.4); }
+
+      .stage {
+        flex: 1;
+        padding: 28px 36px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        position: relative;
+      }
+      .step {
+        display: none;
+        flex: 1;
+        flex-direction: column;
+        justify-content: space-between;
+        animation: fadeSlide 0.26s ease forwards;
+      }
+      .step.active { display: flex; }
+      @keyframes fadeSlide {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      .center-hero {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+      .logo-halo {
+        position: relative;
+        margin-bottom: 18px;
+        animation: floatPulse 3s ease-in-out infinite;
+      }
+      @keyframes floatPulse {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-4px); }
+      }
+      h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; }
+      h2 { font-size: 18px; font-weight: 600; margin-top: 4px; }
+      .eyebrow {
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: var(--accent);
+      }
+      .subtitle {
+        max-width: 490px;
+        margin-top: 10px;
+        font-size: 13px;
+        line-height: 1.55;
+        color: var(--muted);
+      }
+      .meta-row {
+        display: flex;
+        gap: 20px;
+        margin-top: 20px;
+        font-size: 11px;
+        color: #848498;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+        margin-top: 20px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 18px;
+      }
+      .card h3 { font-size: 13px; margin-top: 12px; }
+      .card p { font-size: 11.5px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+
+      .terms-box {
+        margin-top: 14px;
+        height: 136px;
+        overflow-y: auto;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 14px 16px;
+        font-size: 11.5px;
+        line-height: 1.55;
+        color: #a8a8ba;
+        user-select: text;
+      }
+      .terms-box strong { color: #f4f4f6; }
+      .terms-box p + p { margin-top: 8px; }
+
+      .check-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 14px;
+        font-size: 12.5px;
+        cursor: pointer;
+      }
+      .check-row input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+
+      .toggles {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .toggle-card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 11px 14px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        font-size: 12px;
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      .toggle-card.on {
+        border-color: rgba(59,130,246,0.55);
+        background: rgba(59,130,246,0.1);
+      }
+
+      .footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-top: 1px solid #1d1d25;
+        padding-top: 16px;
+        margin-top: 18px;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 8px;
+        padding: 10px 18px;
+        font-size: 12.5px;
+        font-weight: 600;
+        cursor: pointer;
+        border: 1px solid transparent;
+        transition: background 0.15s, opacity 0.15s, border-color 0.15s;
+      }
+      .btn-primary { background: var(--accent); color: #fff; }
+      .btn-primary:hover { background: var(--accent-hover); }
+      .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+      .btn-ghost { background: transparent; border-color: #2a2a36; color: #c4c4d4; }
+      .btn-ghost:hover { background: #16161e; color: #fff; }
+
+      .progress-wrap { width: 100%; max-width: 480px; margin-top: 22px; }
+      .progress-meta {
+        display: flex;
+        justify-content: space-between;
+        font-size: 11.5px;
+        margin-bottom: 8px;
+        color: #88889c;
+      }
+      .progress-pct { font-family: Consolas, monospace; color: #60a5fa; font-weight: 700; }
+      .bar-track {
+        height: 8px;
+        width: 100%;
+        border-radius: 99px;
+        background: #1b1b24;
+        overflow: hidden;
+      }
+      .bar-fill {
+        height: 100%;
+        width: 0%;
+        background: var(--accent);
+        transition: width 0.35s ease, background 0.25s ease;
+      }
+      .bar-fill.done { background: var(--success); }
+      .status-line {
+        margin-top: 10px;
+        font-family: Consolas, monospace;
+        font-size: 11.5px;
+        color: #a4a4b8;
+      }
+      .error-box {
+        margin-top: 14px;
+        padding: 10px 14px;
+        border-radius: 8px;
+        border: 1px solid rgba(239,68,68,0.45);
+        background: rgba(239,68,68,0.12);
+        color: #fca5a5;
+        font-size: 12px;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="titlebar" data-tauri-drag-region>
+        <div class="brand-row" data-tauri-drag-region>
+          <svg width="22" height="22" viewBox="0 0 64 64" fill="none">
+            <rect x="2" y="2" width="60" height="60" rx="14" fill="#0E0E12" stroke="#282834" stroke-width="2" />
+            <path d="M18 46V18H24.2L39.8 38.2V18H46V46H39.8L24.2 25.8V46H18Z" fill="#F4F4F6" />
+            <rect x="39.8" y="18" width="6.2" height="10" rx="1.5" fill="#3B82F6" />
+          </svg>
+          <span class="brand-title">Proyectos Nebrija App</span>
+          <span class="brand-ver">Instalador Windows v1.0.0</span>
+        </div>
+
+        <div class="win-controls">
+          <div class="dots">
+            <span class="dot active" id="dot-1"></span>
+            <span class="dot" id="dot-2"></span>
+            <span class="dot" id="dot-3"></span>
+            <span class="dot" id="dot-4"></span>
+          </div>
+          <button class="ctrl-btn" id="btn-min" title="Minimizar">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+          <button class="ctrl-btn close" id="btn-close" title="Cerrar">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="stage">
+        <!-- STEP 1: WELCOME -->
+        <section class="step active" id="step-1">
+          <div class="center-hero">
+            <div class="logo-halo">
+              <svg width="78" height="78" viewBox="0 0 64 64" fill="none">
+                <rect x="2" y="2" width="60" height="60" rx="14" fill="#0E0E12" stroke="#282834" stroke-width="2" />
+                <path d="M18 46V18H24.2L39.8 38.2V18H46V46H39.8L24.2 25.8V46H18Z" fill="#F4F4F6" />
+                <rect x="39.8" y="18" width="6.2" height="10" rx="1.5" fill="#3B82F6" />
+              </svg>
+            </div>
+            <h1>Proyectos Nebrija App para Windows</h1>
+            <p class="subtitle">
+              Tu mismo espacio web de proyectos en formato aplicacion nativa ligera (~15 MB),
+              sincronizada al segundo con Firebase y con widgets personalizables fijados en tu escritorio.
+            </p>
+            <div class="meta-row">
+              <span>Windows 10 / 11 (x64)</span>
+              <span>Sin permisos de administrador</span>
+              <span>Actualizacion automatica con la web</span>
+            </div>
+            <button class="btn btn-primary" style="margin-top: 26px" onclick="goStep(2)">
+              Comenzar instalacion
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+            </button>
+          </div>
+        </section>
+
+        <!-- STEP 2: FEATURES -->
+        <section class="step" id="step-2">
+          <div>
+            <div class="eyebrow">Paso 2 de 4 · Que incluye</div>
+            <h2>Literalmente tu web, potenciada en escritorio</h2>
+            <div class="cards">
+              <div class="card">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                <h3>Web en tiempo real</h3>
+                <p>Carga directamente tu portal oficial de Vercel. El chat, tareas y documentos cambian al instante sin cerrar ni reinstalar nada.</p>
+              </div>
+              <div class="card">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#60A5FA" stroke-width="2"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
+                <h3>Widgets estilo iOS</h3>
+                <p>Personaliza entregas, tareas marcables, chat o avisos en formato 2x2, 4x2 o 4x4 y fijalos directamente en tu escritorio de Windows.</p>
+              </div>
+              <div class="card">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#34D399" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+                <h3>Avisos nativos en PC</h3>
+                <p>Recibe alertas en el Centro de Acciones de Windows cuando te mencionan, llega un mensaje al equipo o vence una entrega.</p>
+              </div>
+            </div>
+          </div>
+          <div class="footer">
+            <button class="btn btn-ghost" onclick="goStep(1)">Atras</button>
+            <button class="btn btn-primary" onclick="goStep(3)">Continuar</button>
+          </div>
+        </section>
+
+        <!-- STEP 3: TERMS & OPTIONS -->
+        <section class="step" id="step-3">
+          <div>
+            <div class="eyebrow">Paso 3 de 4 · Terminos y preferencias</div>
+            <h2>Condiciones de uso y opciones de instalacion</h2>
+            <div class="terms-box">
+              <p><strong>Licencia de uso — Proyectos Nebrija App (Edicion Windows)</strong></p>
+              <p>1. Esta aplicacion de escritorio carga de forma segura mediante HTTPS tu entorno oficial en nebrija-proyectos-bien.vercel.app y utiliza Firebase Authentication para iniciar sesion.</p>
+              <p>2. Todos los archivos se instalan exclusivamente en tu carpeta de usuario local (%LOCALAPPDATA%\ProyectosNebrija) sin modificar archivos del sistema operativo.</p>
+              <p>3. Los widgets y notificaciones solo se ejecutan en tu PC Windows y pueden configurarse, ocultarse o desinstalarse en cualquier momento desde Aplicaciones instaladas de Windows.</p>
+            </div>
+            <label class="check-row">
+              <input type="checkbox" id="chk-terms" onchange="syncInstallBtn()" />
+              <span>Acepto los terminos y condiciones de Proyectos Nebrija App</span>
+            </label>
+            <div class="toggles">
+              <div class="toggle-card on" id="opt-autostart" onclick="toggleOpt('autostart')">
+                <span>Iniciar automaticamente con Windows</span>
+                <strong id="lbl-autostart" style="color:#60a5fa">Activado</strong>
+              </div>
+              <div class="toggle-card on" id="opt-desktop" onclick="toggleOpt('desktop')">
+                <span>Crear acceso directo en el escritorio</span>
+                <strong id="lbl-desktop" style="color:#60a5fa">Activado</strong>
+              </div>
+            </div>
+          </div>
+          <div class="footer">
+            <button class="btn btn-ghost" onclick="goStep(2)">Atras</button>
+            <button class="btn btn-primary" id="btn-install" disabled onclick="startInstall()">
+              Instalar ahora
+            </button>
+          </div>
+        </section>
+
+        <!-- STEP 4: PROGRESS & LAUNCH -->
+        <section class="step" id="step-4">
+          <div class="center-hero">
+            <svg id="icon-installing" width="56" height="56" viewBox="0 0 64 64" fill="none">
+              <rect x="2" y="2" width="60" height="60" rx="14" fill="#0E0E12" stroke="#282834" stroke-width="2" />
+              <path d="M18 46V18H24.2L39.8 38.2V18H46V46H39.8L24.2 25.8V46H18Z" fill="#F4F4F6" />
+              <rect x="39.8" y="18" width="6.2" height="10" rx="1.5" fill="#3B82F6" />
+            </svg>
+            <h2 id="install-heading" style="margin-top: 16px">Instalando Proyectos Nebrija App...</h2>
+            <p class="status-line" id="install-status">Preparando instalacion...</p>
+
+            <div class="progress-wrap">
+              <div class="progress-meta">
+                <span>Progreso</span>
+                <span class="progress-pct" id="install-pct">0%</span>
+              </div>
+              <div class="bar-track">
+                <div class="bar-fill" id="install-bar"></div>
+              </div>
+            </div>
+
+            <div class="error-box" id="install-error"></div>
+
+            <div id="done-actions" style="display: none; margin-top: 26px; gap: 10px">
+              <button class="btn btn-primary" onclick="launchApp()">Abrir Proyectos Nebrija App</button>
+              <button class="btn btn-ghost" onclick="closeWindow()">Cerrar instalador</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      let currentStep = 1;
+      let optAutostart = true;
+      let optDesktop = true;
+
+      function getTauri() {
+        return window.__TAURI__ || null;
+      }
+
+      async function closeWindow() {
+        const t = getTauri();
+        if (t && t.window) {
+          await t.window.getCurrentWindow().close();
+        }
+      }
+
+      document.getElementById('btn-close').addEventListener('click', closeWindow);
+      document.getElementById('btn-min').addEventListener('click', async () => {
+        const t = getTauri();
+        if (t && t.window) {
+          await t.window.getCurrentWindow().minimize();
+        }
+      });
+
+      function goStep(step) {
+        currentStep = step;
+        for (let i = 1; i <= 4; i++) {
+          document.getElementById('step-' + i).classList.toggle('active', i === step);
+          const dot = document.getElementById('dot-' + i);
+          dot.classList.remove('active', 'done');
+          if (i === step) dot.classList.add('active');
+          else if (i < step) dot.classList.add('done');
+        }
+      }
+
+      function syncInstallBtn() {
+        document.getElementById('btn-install').disabled = !document.getElementById('chk-terms').checked;
+      }
+
+      function toggleOpt(kind) {
+        if (kind === 'autostart') {
+          optAutostart = !optAutostart;
+          document.getElementById('opt-autostart').classList.toggle('on', optAutostart);
+          const lbl = document.getElementById('lbl-autostart');
+          lbl.textContent = optAutostart ? 'Activado' : 'Desactivado';
+          lbl.style.color = optAutostart ? '#60a5fa' : '#7a7a8e';
+        } else {
+          optDesktop = !optDesktop;
+          document.getElementById('opt-desktop').classList.toggle('on', optDesktop);
+          const lbl = document.getElementById('lbl-desktop');
+          lbl.textContent = optDesktop ? 'Activado' : 'Desactivado';
+          lbl.style.color = optDesktop ? '#60a5fa' : '#7a7a8e';
+        }
+      }
+
+      function setProgress(pct, msg) {
+        document.getElementById('install-pct').textContent = pct + '%';
+        document.getElementById('install-bar').style.width = pct + '%';
+        document.getElementById('install-status').textContent = msg;
+        if (pct >= 100) {
+          document.getElementById('install-bar').classList.add('done');
+        }
+      }
+
+      async function startInstall() {
+        goStep(4);
+        setProgress(10, 'Iniciando instalador seguro...');
+        const t = getTauri();
+        if (!t || !t.core) {
+          setProgress(100, 'Modo vista previa completado.');
+          document.getElementById('done-actions').style.display = 'inline-flex';
+          return;
+        }
+        try {
+          if (t.event && t.event.listen) {
+            await t.event.listen('install-progress', (ev) => {
+              if (ev && ev.payload) {
+                setProgress(ev.payload.percent || 0, ev.payload.message || '');
+              }
+            });
+          }
+          await t.core.invoke('perform_install', {
+            autostart: optAutostart,
+            desktopShortcut: optDesktop,
+          });
+          document.getElementById('install-heading').textContent = 'Instalacion completada';
+          setProgress(100, 'Proyectos Nebrija App esta lista en tu menu de Inicio.');
+          document.getElementById('done-actions').style.display = 'inline-flex';
+        } catch (err) {
+          const box = document.getElementById('install-error');
+          box.textContent = String(err || 'Error inesperado durante la instalacion.');
+          box.style.display = 'block';
+          document.getElementById('install-heading').textContent = 'No se pudo completar la instalacion';
+        }
+      }
+
+      async function launchApp() {
+        const t = getTauri();
+        if (t && t.core) {
+          await t.core.invoke('launch_installed_app');
+        }
+      }
+    </script>
+  </body>
+</html>

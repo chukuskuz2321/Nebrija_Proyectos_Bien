@@ -61,6 +61,26 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    // 1B. UserDesktopPreferences Blueprint (Strictly Owner-Only Windows Widget & PC Notification Prefs)
+    function isValidDesktopPreferences(data) {
+      return data.keys().hasAll(['uid', 'widgets', 'notifications', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'widgets', 'notifications', 'updatedAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.uid == request.auth.uid &&
+        data.widgets is list && data.widgets.size() <= 12 &&
+        data.notifications is map &&
+        data.notifications.keys().hasAll(['enabled', 'chat', 'notices', 'tasks', 'mentions', 'deadlines', 'invitations']) &&
+        data.notifications.keys().hasOnly(['enabled', 'chat', 'notices', 'tasks', 'mentions', 'deadlines', 'invitations']) &&
+        data.notifications.enabled is bool &&
+        data.notifications.chat is bool &&
+        data.notifications.notices is bool &&
+        data.notifications.tasks is bool &&
+        data.notifications.mentions is bool &&
+        data.notifications.deadlines is bool &&
+        data.notifications.invitations is bool &&
+        data.updatedAt is timestamp;
+    }
+
     // 2. Project Blueprint (Multi-member + Explorar Proyectos)
     function isValidProject(data) {
       return data.keys().hasAll([
@@ -350,6 +370,24 @@ service cloud.firestore {
           (request.auth.uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'username', 'role', 'searchable', 'updatedAt']))
         );
       allow delete: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+
+      // /users/{userId}/private/{prefId} — Strictly owner-only Windows Desktop Widget & PC Notification Prefs
+      match /private/{prefId} {
+        allow get: if isVerified() && isValidId(userId) && prefId == 'desktop_prefs' && (request.auth.uid == userId || isAdmin());
+        allow list: if false;
+        allow create: if isVerified() && isValidId(userId) && prefId == 'desktop_prefs' &&
+          request.auth.uid == userId &&
+          isValidDesktopPreferences(incoming()) &&
+          incoming().uid == userId &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(userId) && prefId == 'desktop_prefs' &&
+          request.auth.uid == userId &&
+          isValidDesktopPreferences(incoming()) &&
+          incoming().uid == existing().uid &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['widgets', 'notifications', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(userId) && prefId == 'desktop_prefs' && (request.auth.uid == userId || isAdmin());
+      }
     }
 
     // /invitations/{invitationId} — Real-Time Project Invitations
