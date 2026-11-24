@@ -355,3 +355,33 @@ export async function setDesktopAutostart(enabled: boolean): Promise<boolean> {
   const res = await invokeDesktopCommand<boolean>('set_autostart_enabled', { enabled });
   return Boolean(res);
 }
+
+export interface DesktopBrowserLoginResult {
+  idToken?: string;
+  accessToken?: string;
+}
+
+export async function startDesktopBrowserLogin(
+  mode: 'account' | 'drive' = 'account'
+): Promise<{ status: 'ok'; data: DesktopBrowserLoginResult } | { status: 'unsupported' } | { status: 'cancelled'; reason: string }> {
+  if (!isTauriDesktopApp()) return { status: 'unsupported' };
+  try {
+    const data = await window.__TAURI_INTERNALS__!.invoke<DesktopBrowserLoginResult>(
+      'start_desktop_browser_login',
+      { mode }
+    );
+    return { status: 'ok', data: data || {} };
+  } catch (err) {
+    const msg = String(err || '');
+    if (msg.toLowerCase().includes('not found') || msg.toLowerCase().includes('unknown command')) {
+      return { status: 'unsupported' };
+    }
+    return { status: 'cancelled', reason: msg };
+  }
+}
+
+export async function cancelDesktopBrowserLogin(): Promise<void> {
+  if (!isTauriDesktopApp()) return;
+  await invokeDesktopCommand('cancel_desktop_browser_login');
+}
+

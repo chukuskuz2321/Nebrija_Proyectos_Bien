@@ -142,8 +142,10 @@ import { TeacherModeView } from './components/TeacherModeView';
 import { AiRichMessage, AiAttachmentPreview } from './components/AiRichMessage';
 import { BrandLogo } from './components/BrandLogo';
 import { DesktopAppModal } from './components/DesktopAppModal';
+import { DesktopAuthPage } from './components/DesktopAuthPage';
 import { DesktopWidgetCard } from './components/DesktopWidgetCard';
 import {
+  cancelDesktopBrowserLogin,
   closeDesktopWidgetWindow,
   focusMainDesktopWindow,
   isTauriDesktopApp,
@@ -1600,7 +1602,11 @@ export default function App() {
       await hydrateGoogleSession(user, null);
     } catch (err: any) {
       const code = String(err?.code || '');
-      if (code.includes('popup-closed-by-user') || code.includes('cancelled-popup-request')) {
+      if (code.includes('desktop-browser-cancelled')) {
+        setAuthError(
+          err?.message || 'Se cancelo o agoto la espera del inicio de sesion en el navegador.'
+        );
+      } else if (code.includes('popup-closed-by-user') || code.includes('cancelled-popup-request')) {
         setAuthError('Has cerrado la ventana de Google antes de completar el inicio de sesión.');
       } else if (code.includes('popup-blocked')) {
         setAuthError(
@@ -3606,6 +3612,11 @@ export default function App() {
     );
   }
 
+  // EXTERNAL SYSTEM BROWSER AUTH RELAY (/desktop-auth) — Used by Windows Desktop App to sign in via Chrome/Edge
+  if (currentPath === '/desktop-auth') {
+    return <DesktopAuthPage />;
+  }
+
   // PUBLIC LEGAL ROUTES (/privacidad, /privacy, /terminos, /terms) — Always accessible without login
   if (currentPath === '/privacidad' || currentPath === '/privacy') {
     return <LegalPages page="privacy" onNavigate={navigateTo} />;
@@ -4032,7 +4043,11 @@ export default function App() {
                     {isGoogleLoggingIn ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Conectando con Google...</span>
+                        <span>
+                          {isTauriDesktopApp()
+                            ? 'Esperando confirmacion en tu navegador...'
+                            : 'Conectando con Google...'}
+                        </span>
                       </>
                     ) : (
                       <>
@@ -4058,6 +4073,21 @@ export default function App() {
                       </>
                     )}
                   </button>
+
+                  {isTauriDesktopApp() && isGoogleLoggingIn && (
+                    <div className="flex items-center justify-between gap-3 border border-[#3B82F6]/35 bg-[#3B82F6]/10 px-3.5 py-2.5 text-xs text-[#BFDBFE]">
+                      <span>
+                        Se ha abierto tu navegador (Chrome/Edge). Completa el acceso con Google alli y la app iniciara sesion automaticamente.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void cancelDesktopBrowserLogin()}
+                        className="shrink-0 border border-[#3B82F6]/40 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#3B82F6]/20 cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  )}
 
                   <p className="text-[11px] text-[#7E7E8E] leading-relaxed text-center">
                     Si ya creaste tu perfil en otro ordenador o móvil, al entrar con tu Google recuperarás automáticamente todos tus proyectos, archivos e invitaciones.

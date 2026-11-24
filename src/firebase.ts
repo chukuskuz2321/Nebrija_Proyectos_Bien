@@ -2,10 +2,14 @@ import { initializeApp } from 'firebase/app';
 import {
   getAuth,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  signInWithCredential,
   GoogleAuthProvider,
   onAuthStateChanged,
   User,
 } from 'firebase/auth';
+import { isTauriDesktopApp, startDesktopBrowserLogin } from './services/desktopBridge';
 import {
   getFirestore,
   collection,
@@ -142,6 +146,20 @@ export const initAuth = (
   onAuthSuccess?: (user: User, token: string | null) => void,
   onAuthFailure?: () => void
 ) => {
+  // Capture any completed redirect sign-in (fallback flow)
+  void getRedirectResult(auth)
+    .then((result) => {
+      if (result) {
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        if (credential?.accessToken) {
+          cachedAccessToken = credential.accessToken;
+        }
+      }
+    })
+    .catch((err) => {
+      console.warn('Redirect sign-in check:', err);
+    });
+
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
       if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
@@ -152,12 +170,63 @@ export const initAuth = (
   });
 };
 
+// Used by /desktop-auth inside the user's real Chrome/Edge browser to relay Google tokens back to Windows App
+export const signInWithGoogleForDesktopRelay = async (
+  mode: 'account' | 'drive'
+): Promise<{ idToken: string | null; accessToken: string | null }> => {
+  const provider = mode === 'drive' ? driveProvider : accountProvider;
+  const result = await signInWithPopup(auth, provider);
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  return {
+    idToken: credential?.idToken || null,
+    accessToken: credential?.accessToken || null,
+  };
+};
+
 // Primary Social-Network Account Sign-In with Google (NO Drive scopes, instant 1-click)
 export const signInWithGoogleAccount = async (): Promise<{ user: User }> => {
   try {
     isSigningIn = true;
-    const result = await signInWithPopup(auth, accountProvider);
-    return { user: result.user };
+
+    // 1. Inside Windows Desktop App (Tauri v2): authenticate via user's real system browser (Chrome/Edge)
+    if (isTauriDesktopApp()) {
+      const desktopRes = await startDesktopBrowserLogin('account');
+      if (desktopRes.status === 'ok') {
+        const { idToken, accessToken } = desktopRes.data;
+        if (!idToken && !accessToken) {
+          throw new Error('No se recibieron credenciales de Google desde el navegador.');
+        }
+        const credential = GoogleAuthProvider.credential(idToken || null, accessToken || null);
+        const result = await signInWithCredential(auth, credential);
+        return { user: result.user };
+      }
+      if (desktopRes.status === 'cancelled') {
+        const cancelErr = new Error(desktopRes.reason || 'Inicio de sesion cancelado') as Error & {
+          code?: string;
+        };
+        cancelErr.code = 'auth/desktop-browser-cancelled';
+        throw cancelErr;
+      }
+      // Older .exe build without loopback command: redirect cleanly instead of crashing on blocked popup
+      await signInWithRedirect(auth, accountProvider);
+      return await new Promise<{ user: User }>(() => {});
+    }
+
+    // 2. Standard web browser: popup with automatic redirect fallback if popups are blocked
+    try {
+      const result = await signInWithPopup(auth, accountProvider);
+      return { user: result.user };
+    } catch (popupError: unknown) {
+      const code =
+        typeof popupError === 'object' && popupError !== null && 'code' in popupError
+          ? String((popupError as { code?: unknown }).code || '')
+          : '';
+      if (code.includes('popup-blocked')) {
+        await signInWithRedirect(auth, accountProvider);
+        return await new Promise<{ user: User }>(() => {});
+      }
+      throw popupError;
+    }
   } catch (error) {
     console.error('Google account sign in error:', error);
     throw error;
@@ -170,14 +239,50 @@ export const signInWithGoogleAccount = async (): Promise<{ user: User }> => {
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
   try {
     isSigningIn = true;
-    const result = await signInWithPopup(auth, driveProvider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (!credential?.accessToken) {
-      throw new Error('Failed to get access token from Firebase Auth');
+
+    if (isTauriDesktopApp()) {
+      const desktopRes = await startDesktopBrowserLogin('drive');
+      if (desktopRes.status === 'ok') {
+        const { idToken, accessToken } = desktopRes.data;
+        if (!accessToken) {
+          throw new Error('No se obtuvo el token de acceso de Google Drive.');
+        }
+        const credential = GoogleAuthProvider.credential(idToken || null, accessToken);
+        const result = await signInWithCredential(auth, credential);
+        cachedAccessToken = accessToken;
+        return { user: result.user, accessToken };
+      }
+      if (desktopRes.status === 'cancelled') {
+        const cancelErr = new Error(desktopRes.reason || 'Conexion con Google Drive cancelada') as Error & {
+          code?: string;
+        };
+        cancelErr.code = 'auth/desktop-browser-cancelled';
+        throw cancelErr;
+      }
+      await signInWithRedirect(auth, driveProvider);
+      return await new Promise<{ user: User; accessToken: string } | null>(() => {});
     }
-    const token = credential.accessToken;
-    cachedAccessToken = token;
-    return { user: result.user, accessToken: token };
+
+    try {
+      const result = await signInWithPopup(auth, driveProvider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (!credential?.accessToken) {
+        throw new Error('Failed to get access token from Firebase Auth');
+      }
+      const token = credential.accessToken;
+      cachedAccessToken = token;
+      return { user: result.user, accessToken: token };
+    } catch (popupError: unknown) {
+      const code =
+        typeof popupError === 'object' && popupError !== null && 'code' in popupError
+          ? String((popupError as { code?: unknown }).code || '')
+          : '';
+      if (code.includes('popup-blocked')) {
+        await signInWithRedirect(auth, driveProvider);
+        return await new Promise<{ user: User; accessToken: string } | null>(() => {});
+      }
+      throw popupError;
+    }
   } catch (error) {
     console.error('Google Drive sign in error:', error);
     throw error;
